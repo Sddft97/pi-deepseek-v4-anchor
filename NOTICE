@@ -1,0 +1,20 @@
+# NOTICE
+
+This project is a pi-coding-agent port of the **anchored standard** idea from:
+
+- **xiaobright/dsh-anchored-standard** (MIT) —
+  https://github.com/xiaobright/dsh-anchored-standard
+- **xiaobright/modeltest** (MIT) — https://github.com/xiaobright/modeltest
+  (experimental evidence for the DeepSeek V4 Pro tool-catalog conditioning)
+
+The `str_replace_editor` implementation is adapted from MIT-licensed pi ports:
+
+- **kxh4892636/pi-deepseek-anchor** (MIT) —
+  https://github.com/kxh4892636/pi-deepseek-anchor
+- **vavilonska/SeekAnchor** (MIT) — https://github.com/vavilonska/SeekAnchor
+
+Tool schemas and the Minimal persona text are byte-identical to the official
+DeepSeek Harness Minimal preset (MIT, deepseek-ai/deepseek-harness).
+
+This project is a community project. It is not an official DeepSeek or pi
+project and is not affiliated with or endorsed by DeepSeek.
