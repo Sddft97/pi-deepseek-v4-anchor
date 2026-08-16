@@ -1,5 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir, homedir } from "node:os";
+import { join } from "node:path";
+
+// Isolate all pi settings I/O to a temporary HOME so tests never touch the
+// real user configuration and are portable across OSes (no USERPROFILE).
+const tempHome = mkdtempSync(join(tmpdir(), "pi-dsv4a-test-"));
+process.env.HOME = tempHome;
+process.env.USERPROFILE = tempHome;
+process.on("exit", () => {
+  try { rmSync(tempHome, { recursive: true, force: true }); } catch { /* ignore */ }
+});
+
 import { createJiti } from "jiti";
 
 // Load the extension with jiti (the same loader pi uses). Imports of
@@ -182,34 +195,27 @@ test("i18n: default locale is en; zh config switches menu language", async () =>
 test("i18n: language switch persists and re-renders menu in the new locale", async () => {
   const { events } = instantiate();
   const cmd = events["cmd:anchored-tools"];
-  const fs = await import("node:fs");
-  const sp = process.env.USERPROFILE + "/.pi/agent/settings.json";
-  const sc = JSON.parse(fs.readFileSync(sp, "utf8"));
-  const origLocale = sc.anchoredTools?.locale;
-  sc.anchoredTools = { ...(sc.anchoredTools ?? {}), locale: "en" };
-  fs.writeFileSync(sp, JSON.stringify(sc, null, 2) + "\n");
+  const sp = join(homedir(), ".pi", "agent", "settings.json");
+  mkdirSync(join(homedir(), ".pi", "agent"), { recursive: true });
+  const sc = { anchoredTools: { enabled: true, preset: "anchor", locale: "en" } };
+  writeFileSync(sp, JSON.stringify(sc, null, 2) + "\n");
 
-  // 顶层（en）→ 高级设置 → Language → 中文
+  // top (en) -> Advanced -> Language -> 中文
   const ctx = mkCtx("i18n-1");
   const selects = [];
   ctx.ui.select = async (title, options) => {
     selects.push({ title, options });
     const step = selects.length;
-    if (step === 1) return "⚙️ Advanced settings"; // top → advanced
-    if (step === 2) return options.find((o) => o.includes("Language")) ?? options[0]; // advanced → language
-    if (step === 3) return "中文"; // language menu → zh
+    if (step === 1) return "⚙️ Advanced settings"; // top -> advanced
+    if (step === 2) return options.find((o) => o.includes("Language")) ?? options[0]; // advanced -> language
+    if (step === 3) return "中文"; // language menu -> zh
     return undefined;
   };
   await cmd.handler("", ctx);
 
-  const after = JSON.parse(fs.readFileSync(sp, "utf8")).anchoredTools;
+  const after = JSON.parse(readFileSync(sp, "utf8")).anchoredTools;
   assert.equal(after.locale, "zh");
 
-  // 新菜单应该用中文渲染（第 4 次 select 是语言菜单重绘）
   const zhRendered = selects.some((s) => s.title.includes("语言"));
   assert.ok(zhRendered);
-
-  // 还原
-  if (origLocale === undefined) delete sc.anchoredTools.locale; else sc.anchoredTools.locale = origLocale;
-  fs.writeFileSync(sp, JSON.stringify(sc, null, 2) + "\n");
 });
