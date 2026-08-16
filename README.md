@@ -1,5 +1,7 @@
 # pi-deepseek-v4-anchor
 
+**[English](README.md) | [简体中文](README.zh-CN.md)**
+
 A pi-coding-agent extension that anchors DeepSeek V4 Pro (and Flash) into the
 DSH **Minimal trajectory** ("We need…" first-line reasoning) for the first
 model request, then restores the full tool catalog after the first durable

@@ -1,5 +1,7 @@
 # pi-deepseek-v4-anchor
 
+**[English](README.md) | [简体中文](README.zh-CN.md)**
+
 pi 扩展：把 DeepSeek V4 Pro（及 Flash）的**首个模型请求锚定到 DSH Minimal 轨迹**（`We need` 起手思维链），首个持久工具调用后恢复完整工具目录。
 
 这是 [xiaobright/dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard) 的 pi 移植（实验证据见 [xiaobright/modeltest](https://github.com/xiaobright/modeltest)）。
