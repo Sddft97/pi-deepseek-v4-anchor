@@ -42,6 +42,12 @@ session loses the trajectory. Anchored Standard gets both:
 
 ## Features
 
+- **API-format adapters** — the request pipeline detects the provider payload
+  format and dispatches to a per-format adapter (`src/format.ts`):
+  `anthropic-messages` (system as content-block array, `tool_use` blocks) or
+  `openai-chat` (string / system-role message, `tool_calls`). The Minimal
+  persona swap now works on both — previously it silently no-op'd on
+  anthropic-messages payloads.
 - **Presets** (`native` / `anchor` / `anchor-restore` / `minimal`) — pick one
   in normal use; advanced keys override.
 - **`str_replace_editor`** — a faithful port of the DSH Minimal editor
@@ -166,6 +172,23 @@ npm install
 npm test          # node --test
 npx tsc --noEmit  # type check
 ```
+
+## Changelog
+
+### v4.2 — format adapters + anthropic-messages fixes
+
+- **Fix**: Minimal-persona swap never applied for anthropic-messages payloads
+  (`system` is a content-block array there). The pipeline now detects the
+  payload format and dispatches to format-specific adapters
+  (`src/format.ts`); the state machine in `index.ts` is format-agnostic.
+- **Fix**: `promoteOn: "tool-call"` now detects anthropic `tool_use` content
+  blocks (previously only `tool_calls` / pi `toolCall`).
+- **Fix**: context reinjection captures the original prompt from `system`
+  arrays, not only from string systems.
+- **Fix**: log helpers create `~/.pi/agent/tmp/` automatically, so the
+  verification logs (startup marker / activity log) actually exist.
+- **Refactor**: single `index.ts` split into `src/` modules
+  (`config` / `format` / `promotion` / `editor` / `menu` / `log`).
 
 ## References
 

@@ -219,3 +219,105 @@ test("i18n: language switch persists and re-renders menu in the new locale", asy
   const zhRendered = selects.some((s) => s.title.includes("语言"));
   assert.ok(zhRendered);
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// v4.2: anthropic-messages payload 格式支持（system 内容块数组 / tool_use）
+// ────────────────────────────────────────────────────────────────────────────
+
+test("format detection: system array → anthropic-messages, string → openai-chat", () => {
+  assert.equal(C.detectPayloadFormat({ system: [{ type: "text", text: "S" }] }), "anthropic-messages");
+  assert.equal(C.detectPayloadFormat({ system: "S" }), "openai-chat");
+  assert.equal(C.detectPayloadFormat({ messages: [{ role: "system", content: "S" }] }), "openai-chat");
+  assert.equal(C.detectPayloadFormat({ messages: [{ role: "user", content: "q" }] }), "unknown");
+});
+
+test("anthropic-messages payload: first request bootstraps (system array → minimal persona)", async () => {
+  const { events } = instantiate();
+  const ctx = mkCtx("a1");
+  const out = await runRequest(events, {
+    model: "deepseek-v4-pro",
+    max_tokens: 64000,
+    system: [{ type: "text", text: "You are pi. Available tools: ...", cache_control: { type: "ephemeral" } }],
+    messages: [{ role: "user", content: [{ type: "text", text: "q" }] }],
+    tools: [
+      { name: "bash", description: "d", input_schema: { type: "object" } },
+      { name: "read", description: "d", input_schema: { type: "object" } },
+      { name: "str_replace_editor", description: "d", input_schema: { type: "object" } },
+    ],
+  }, ctx);
+  assert.equal(out.system[0].text, "You are a helpful software engineer assistant.");
+  assert.equal(out.system[0].cache_control.type, "ephemeral"); // 非 text 属性保留
+  assert.deepEqual(out.tools.map((t) => t.name).sort(), ["bash", "str_replace_editor"]);
+  assert.equal(out.max_tokens, 1024);
+});
+
+test("anthropic-messages payload: tool_use history promotes to full catalog", async () => {
+  const { events } = instantiate();
+  const ctx = mkCtx("a2");
+  await runRequest(events, {
+    model: "deepseek-v4-pro",
+    system: [{ type: "text", text: "S" }],
+    messages: [{ role: "user", content: [{ type: "text", text: "q" }] }],
+    tools: [{ name: "bash", description: "d", input_schema: { type: "object" } }],
+  }, ctx);
+  const p2 = {
+    model: "deepseek-v4-pro",
+    system: [{ type: "text", text: "S" }],
+    messages: [
+      { role: "user", content: [{ type: "text", text: "q" }] },
+      { role: "assistant", content: [{ type: "text", text: "ok" }, { type: "tool_use", id: "t1", name: "bash", input: {} }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "done" }] },
+    ],
+    tools: [
+      { name: "bash", description: "d", input_schema: { type: "object" } },
+      { name: "read", description: "d", input_schema: { type: "object" } },
+    ],
+  };
+  const out2 = await runRequest(events, p2, ctx);
+  assert.equal(out2 === undefined || out2.tools.length === 2, true);
+});
+
+test("promoteOn tool-call detects anthropic tool_use content blocks", () => {
+  const adapter = C.getAdapter({ system: [{ type: "text", text: "S" }] });
+  assert.ok(adapter);
+  assert.equal(
+    C.isPromoted(adapter, { messages: [{ role: "assistant", content: [{ type: "tool_use", name: "bash" }] }] }, "tool-call"),
+    true,
+  );
+  assert.equal(C.isPromoted(adapter, { messages: [{ role: "user", content: [] }] }, "tool-call"), false);
+});
+
+test("context reinject captures the original prompt from an anthropic system array", async () => {
+  const { events } = instantiate();
+  const ctx = mkCtx("a4");
+  const sysText = "You are pi. Full context.";
+  await runRequest(events, {
+    model: "deepseek-v4-pro",
+    system: [{ type: "text", text: sysText }],
+    messages: [{ role: "user", content: [{ type: "text", text: "q" }] }],
+    tools: [
+      { name: "bash", description: "d", input_schema: { type: "object" } },
+      { name: "str_replace_editor", description: "d", input_schema: { type: "object" } },
+    ],
+  }, ctx);
+  const entries = [
+    { message: { role: "user", content: [{ type: "text", text: "q" }] } },
+    { message: { role: "assistant", content: [{ type: "toolCall", name: "bash" }] } },
+    { message: { role: "toolResult", toolName: "bash" } },
+  ];
+  const out = await events.before_agent_start(
+    { type: "before_agent_start", prompt: "hello", images: [], systemPrompt: "x", systemPromptOptions: {} },
+    { ...ctx, sessionManager: { getSessionId: () => "a4", buildContextEntries: () => entries } },
+  );
+  assert.equal(out.message.customType, "anchored-context");
+  assert.equal(out.message.content, sysText);
+  assert.equal(out.message.display, false);
+});
+
+test("log helpers create the tmp dir and append lines", async () => {
+  const logNs = await jiti.import("../src/log.ts");
+  const line = "test-" + Date.now();
+  logNs.appendLine(logNs.MARKER_PATH, line);
+  const content = readFileSync(logNs.MARKER_PATH, "utf8");
+  assert.ok(content.includes(line));
+});

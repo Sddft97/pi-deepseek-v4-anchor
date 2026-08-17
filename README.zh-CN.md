@@ -25,6 +25,9 @@ DeepSeek V4 Pro 对 API 可见工具目录和系统提示词 persona 高度敏�
 
 ## 特性
 
+- **API 格式适配器**：请求管线先识别 provider payload 的 API 格式，再分流到对应适配器（`src/format.ts`）：
+  `anthropic-messages`（system 为内容块数组、`tool_use` 块）或 `openai-chat`（字符串 / system 角色消息、`tool_calls`）。
+  Minimal persona 替换在两种格式下都能生效 —— 此前在 anthropic-messages payload 下会静默不生效。
 - **预设制**：`native` / `anchor`（默认）/ `anchor-restore` / `minimal`，日常只选 preset，高级键可覆盖。
 - **`str_replace_editor`**：DSH Minimal 编辑器忠实移植（view/create/str_replace/insert、绝对路径、唯一匹配替换、16000 截断），**只在目标模型会话注册**。
 - **Sticky promotion**：已晋升会话在压缩（历史折叠）后不再意外重锚定。
@@ -114,6 +117,16 @@ npm install
 npm test          # node --test
 npx tsc --noEmit  # 类型检查
 ```
+
+## 更新日志
+
+### v4.2 — 格式适配器 + anthropic-messages 修复
+
+- **修复**：anthropic-messages payload（`system` 为内容块数组）下 Minimal persona 替换从不生效。现在先识别 payload 格式，再分流到格式专用适配器（`src/format.ts`），状态机（`index.ts`）与格式无关。
+- **修复**：`promoteOn: "tool-call"` 现在能识别 anthropic 的 `tool_use` 内容块（此前只认 `tool_calls` / pi `toolCall`）。
+- **修复**：上下文注回能捕获 `system` 数组里的原始提示词，不再只支持字符串 system。
+- **修复**：日志自动创建 `~/.pi/agent/tmp/`，验证日志（启动标记 / 活动日志）真正可查。
+- **重构**：单一 `index.ts` 拆分为 `src/` 模块（`config` / `format` / `promotion` / `editor` / `menu` / `log`）。
 
 ## 参考仓库
 
