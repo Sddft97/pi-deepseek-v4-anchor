@@ -240,20 +240,50 @@ export function registerAnchoredToolsCommand(pi: ExtensionAPI): void {
 				// ── 层级菜单（返回上级 / Esc 都回到上级；仅顶层 Esc 退出整个菜单）──
 				const PRESET_NAMES = ["anchor", "anchor-restore", "minimal", "native"] as PresetName[];
 
-				/** 目标模型勾选菜单 */
+				/** 目标模型勾选菜单（动态发现 DeepSeek 模型，未来改名/新增无需改代码） */
 				const showModelsMenu = async (): Promise<boolean> => {
 					while (true) {
 						const cur = freshCfg();
 						const t = makeT(cur.locale);
 						const currentModels = cur.models;
-						const options = [
-							t("modelToggle", "deepseek-v4-pro", currentModels.includes("deepseek-v4-pro")),
-							t("modelToggle", "deepseek-v4-flash", currentModels.includes("deepseek-v4-flash")),
-							t("done"),
-						];
+
+						// 从模型注册表发现可用的 DeepSeek 模型（内置 + models.json 自定义）。
+						// getAvailable() 仅返回已配置鉴权的模型；不可用时退化为 getAll()。
+						const discovered: { key: string; label: string }[] = [];
+						const push = (key: string, label: string) => {
+							if (!key || discovered.some((d) => d.key === key)) return;
+							discovered.push({ key, label });
+						};
+						try {
+							const registry = ctx.modelRegistry;
+							const available = registry?.getAvailable?.() ?? [];
+							const all = available.length > 0 ? available : (registry?.getAll?.() ?? []);
+							for (const m of all) {
+								const id = String((m as { id?: string }).id ?? "");
+								const prov = String((m as { provider?: string }).provider ?? "");
+								if (!id || !/deepseek/i.test(`${prov}/${id}`)) continue;
+								// 裸 id 含 "/" 时，锚定匹配需要前导 * 才能命中（见 config.modelMatches）
+								push(id.includes("/") ? `*${id}` : id, `${prov}/${id}`);
+							}
+						} catch {
+							/* 注册表不可用则只显示已配置模式 */
+						}
+						// 已配置但未被发现的模式（自定义 glob / 正则）也要可切换
+						for (const p of currentModels) push(p, p);
+						discovered.sort((a, b) => a.label.localeCompare(b.label));
+
+						const byOption = new Map<string, string>();
+						const options = discovered.map((d) => {
+							const opt = t("modelToggle", d.label, currentModels.includes(d.key));
+							byOption.set(opt, d.key);
+							return opt;
+						});
+						options.push(t("done"));
+
 						const choice = await ctx.ui.select(t("modelsTitle", currentModels.join(", ") || t("none")), options);
 						if (!choice || choice === t("done")) return true; // Esc / Done → back to advanced
-						const model = choice.includes("deepseek-v4-pro") ? "deepseek-v4-pro" : "deepseek-v4-flash";
+						const model = byOption.get(choice);
+						if (!model) continue;
 						const next = new Set(currentModels);
 						if (next.has(model)) next.delete(model);
 						else next.add(model);

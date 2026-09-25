@@ -88,7 +88,7 @@ arrays replace wholesale, project wins).
 "anchoredTools": {
   "enabled": true,
   "preset": "anchor",                 // "anchor" | "anchor-restore" | "minimal" | "native"
-  "models": ["deepseek-v4-pro", "deepseek-v4-flash"],   // glob; "provider/modelId" or bare id
+  "models": ["/deepseek.*(flash|pro)/i"],   // glob or /regex/flags; "provider/modelId" or bare id
   "exemptSubagents": false,           // false: subagents bootstrap too (default)
   "locale": "en",                     // UI language: "en" | "zh"
   "notify": true,
@@ -102,6 +102,28 @@ arrays replace wholesale, project wins).
   // "bootstrapMaxTokens": 1024       // first-request output cap; explicit null disables
 }
 ```
+
+### Matching future / renamed models
+
+`models` entries are either **globs** (`*`, `?`, anchored) or **JavaScript
+regex literals** written as `/pattern/flags`. Regex patterns are tested against
+both the bare model id and `provider/modelId`, so a provider-scoped prefix like
+`deepseek/` no longer breaks a bare match. Examples:
+
+```jsonc
+"models": [
+  "/deepseek.*flash/i",        // any provider, any DeepSeek flash naming
+  "/^deepseek\\/deepseek-v4\\.1-flash$/",  // exact bare id
+  "*deepseek-v4*",              // glob: pro + flash + future variants
+  "openrouter-siliconflow/*"    // provider-qualified glob
+]
+```
+
+Because the matcher is re-evaluated per request, adding a newly released model
+is a one-line settings edit (or a toggle in `/anchored-tools` → Advanced →
+Target models). That menu is generated from the live model registry, so any
+DeepSeek model pi knows about appears there automatically — no code change or
+hardcoded name list is required.
 
 ### Presets
 
@@ -133,7 +155,7 @@ Level 1:                     Level 2 (switch preset):
 └──────────────────────────┘  🔙 Back
 
 Level 2 (advanced) → Level 3:
-🎛 Target models (toggle pro/flash, ✅ Done)
+🎛 Target models (dynamic DeepSeek list, ✅ Done)
 🤖 Subagent exemption (enabled/disabled)
 🌐 Language (English)
 🔙 Back
