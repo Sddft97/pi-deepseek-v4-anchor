@@ -85,6 +85,8 @@ export const PRESETS: Record<PresetName, PresetDef> = {
 export interface Config extends PresetDef {
 	preset: PresetName;
 	models: string[];
+	/** 菜单“停用”的规则暂存区：不参与匹配，仅供一键恢复。 */
+	disabledModels: string[];
 	/** UI language: "en" | "zh". */
 	locale: Locale;
 	notify: boolean;
@@ -95,6 +97,7 @@ interface RawAnchoredTools {
 	enabled?: unknown;
 	preset?: unknown;
 	models?: unknown;
+	disabledModels?: unknown;
 	bootstrapTools?: unknown;
 	bootstrapPrompt?: unknown;
 	promoteOn?: unknown;
@@ -183,6 +186,10 @@ export function resolveConfig(raw: RawAnchoredTools | undefined): Config {
 			Array.isArray(r.models) && r.models.every((m) => typeof m === "string") && r.models.length > 0
 				? (r.models as string[])
 				: [...DEFAULT_MODELS],
+		disabledModels:
+			Array.isArray(r.disabledModels) && r.disabledModels.every((m) => typeof m === "string")
+				? [...new Set(r.disabledModels as string[])]
+				: [],
 		bootstrapTools:
 			Array.isArray(r.bootstrapTools) &&
 			r.bootstrapTools.every((t) => typeof t === "string") &&
@@ -245,14 +252,26 @@ export function matchPattern(pattern: string, value: string): boolean {
 	return matchGlob(pattern, value);
 }
 
+/** 精确条目：非正则且不含通配符 —— 只会命中字面等同的 id（UI 用来区分“显式指定”与“规则命中”）。 */
+export function isExactPattern(pattern: string): boolean {
+	return !parseRegexPattern(pattern) && !/[*?]/.test(pattern);
+}
+
+/** 第一条命中该模型的模式；无命中返回 undefined（UI 标注来源用）。 */
+export function matchingPattern(modelId: string, provider: string, patterns: string[]): string | undefined {
+	const qualified = `${provider}/${modelId}`;
+	return patterns.find((p) => {
+		// 正则模式同时测试裸 id 与 provider/id，方便写 /deepseek.*flash/i
+		const rx = parseRegexPattern(p);
+		if (rx) {
+			const re = new RegExp(rx.source, rx.flags);
+			return re.test(modelId) || re.test(qualified);
+		}
+		return p.includes("/") ? matchGlob(p, qualified) : matchGlob(p, qualified) || matchGlob(p, modelId);
+	});
+}
+
 export function modelMatches(modelId: string, provider: string, patterns: string[]): boolean {
 	if (patterns.length === 0) return false;
-	const qualified = `${provider}/${modelId}`;
-	return patterns.some((p) => {
-		// 正则模式同时测试裸 id 与 provider/id，方便写 /deepseek.*flash/i
-		if (parseRegexPattern(p)) return matchPattern(p, modelId) || matchPattern(p, qualified);
-		return p.includes("/")
-			? matchPattern(p, qualified)
-			: matchPattern(p, qualified) || matchPattern(p, modelId);
-	});
+	return matchingPattern(modelId, provider, patterns) !== undefined;
 }

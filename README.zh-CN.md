@@ -44,7 +44,7 @@ pi install npm:pi-deepseek-v4-anchor
 pi install git:github.com/Sddft97/pi-deepseek-v4-anchor@v1.0.0
 ```
 
-然后 `/reload`（或重启 pi）。默认预设 `anchor`，默认目标模型 `deepseek-v4-pro` / `deepseek-v4-flash`。
+然后 `/reload`（或重启 pi）。默认预设 `anchor`，默认目标模式 `/deepseek.*(flash|pro)/i`（所有 DeepSeek flash/pro 命名，含未来新模型）。
 
 ## 配置
 
@@ -54,7 +54,8 @@ pi install git:github.com/Sddft97/pi-deepseek-v4-anchor@v1.0.0
 "anchoredTools": {
   "enabled": true,
   "preset": "anchor",                 // "anchor" | "anchor-restore" | "minimal" | "native"
-  "models": ["deepseek-v4-pro", "deepseek-v4-flash"],   // glob；"provider/modelId" 或裸名
+  "models": ["/deepseek.*(flash|pro)/i"],   // glob 或 /正则/flags；"provider/modelId" 或裸名
+  "disabledModels": [],               // 菜单里停用的规则暂存（可一键恢复；不参与匹配）
   "exemptSubagents": false,           // false：子代理也参与锚定（默认）
   "locale": "zh",                     // UI 语言："en" | "zh"
   "notify": true,
@@ -68,6 +69,41 @@ pi install git:github.com/Sddft97/pi-deepseek-v4-anchor@v1.0.0
   // "bootstrapMaxTokens": 1024       // 首轮输出预算封顶；显式 null 关闭
 }
 ```
+
+### 匹配未来 / 改名的模型
+
+`models` 条目可以是 **glob**（`*`、`?`，两端锚定）或 **JavaScript 正则字面量**（写成 `/模式/flags`）。正则会同时对裸 id 和 `provider/modelId` 测试，provider 前缀（如 OpenRouter 的 `deepseek/`）不再导致裸写匹配不上。示例：
+
+```jsonc
+"models": [
+  "/deepseek.*flash/i",                  // 任意 provider、任意 DeepSeek flash 命名
+  "/^deepseek\\/deepseek-v4\\.1-flash$/",  // 精确裸 id
+  "*deepseek-v4*",                        // glob：pro + flash + 未来变体
+  "openrouter-siliconflow/*"              // provider 限定 glob
+]
+```
+
+匹配器每个请求重新求值，新增模型只需改一行 settings（或在菜单里勾选）。菜单模型列表来自实时模型注册表，pi 认识的 DeepSeek 模型自动出现——无需改代码或维护硬编码名单；被自定义规则（如 `/qwen.*/`）命中的模型也会出现。
+
+### 目标模型菜单语义
+
+两个正交指示器——勾选框回答“我是否手动开启了它”，📜 后缀回答“是否有规则覆盖它”：
+
+```
+── 匹配规则 ──
+☑ 📜 /deepseek.*(flash|pro)/i（命中 4）   ← 点击 = 编辑 / 停用 / 删除
+⏸ 📜 /deepseek-r1/（已停用）                ← 点击 = 编辑 / 启用 / 删除
+➕ 添加规则（glob 或 /正则/flags）
+── 模型 ──
+☑ 📜 bai/deepseek-v4-flash          手动开 + 规则覆盖
+☑ opencode/deepseek-v3              仅手动开
+☐ 📜 openrouter/deepseek/deepseek-r1  仅规则覆盖（会被锚定！）
+☐ someprovider/deepseek-v2          未启用
+```
+
+- 实际生效 = 框 ∨ 📜；标题显示“生效 N/M”。
+- 点击模型 = 统一的手动开关：写入/移除 provider 限定精确条目（`provider/modelId`），绝不产生通配。
+- 规则逐条管理（子菜单）：✏️ 编辑（输入弹窗）、⏸ 停用（存入 `disabledModels`，一键可恢复，不参与匹配）、🗑 彻底删除；➕ 添加规则接受 glob / `/正则/flags` / `provider/model-id`，输入停用区已有的规则会直接启用。
 
 ### 预设
 
@@ -89,13 +125,13 @@ pi install git:github.com/Sddft97/pi-deepseek-v4-anchor@v1.0.0
 └──────────────────────┘     🔙 返回上级
 
 第 2 层（高级设置）→ 第 3 层：
-🎛 目标模型（勾选 pro/flash，✅ 完成）
+🎛 目标模型（规则区 + 生效模型列表，✅ 完成）
 🤖 子代理豁免（开启/关闭）
 🌐 语言（中文）
 🔙 返回上级
 ```
 
-导航：子菜单选"🔙 返回上级"或 Esc → 回上级；顶层 Esc 才退出。预设/目标模型/子代理豁免/语言修改**持久化**到 settings.json 并立即生效（UI 通过轻量字典本地化）。
+导航：子菜单选"🔙 返回上级"或 Esc → 回上级；顶层 Esc 才退出。预设/目标模型/子代理豁免/语言修改**持久化**到 settings.json 并立即生效（UI 通过轻量字典本地化）；规则增删也可在目标模型菜单里完成（➕ 输入框）。
 
 ## 验证
 

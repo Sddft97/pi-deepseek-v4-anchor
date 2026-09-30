@@ -6,7 +6,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locale, PresetName } from "./config.js";
-import { isPresetName, loadRawConfig, modelMatches, readSettingsJson, resolveConfig } from "./config.js";
+import { isExactPattern, isPresetName, loadRawConfig, modelMatches, parseRegexPattern, readSettingsJson, resolveConfig } from "./config.js";
 import { isPromotedEntries } from "./promotion.js";
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -30,8 +30,26 @@ const I18N = {
 		subagentExemption: (state: string) => `🤖 Subagent exemption (${state})`,
 		language: (name: string) => `🌐 Language (${name})`,
 		back: "🔙 Back",
-		modelsTitle: (models: string) => `Target models (current: ${models})`,
-		modelToggle: (name: string, on: boolean) => `${on ? "☑" : "☐"} ${name} (toggle)`,
+		modelsTitle: (on: number, total: number) => `Target models (${on}/${total} anchored)`,
+		rulesHeader: "── Matching rules ──",
+		modelsHeader: "── Models ──",
+		ruleEntry: (pattern: string, n: number) => `☑ 📜 ${pattern} (${n} matched)`,
+		addRule: "➕ Add rule (glob or /regex/flags)",
+		addRuleTitle: "New matching rule",
+		addRulePlaceholder: "/deepseek.*flash/i  |  *deepseek-v4*  |  provider/model-id",
+		ruleDuplicate: (rule: string) => `[anchored-tools] rule already exists: ${rule}`,
+		ruleInvalid: (rule: string) => `[anchored-tools] invalid regex syntax: ${rule}`,
+		modelToggle: (name: string, ruleCovered: boolean, on: boolean) =>
+			`${on ? "☑" : "☐"}${ruleCovered ? " 📜" : ""} ${name}`,
+		ruleDisabledEntry: (pattern: string) => `⏸ 📜 ${pattern} (disabled)`,
+		ruleActionTitle: (pattern: string) => `Rule: ${pattern}`,
+		ruleEdit: "✏️ Edit (re-enter value)",
+		ruleDisable: "⏸ Disable (kept for re-enabling)",
+		ruleEnable: "▶️ Enable",
+		ruleDelete: "🗑 Delete permanently",
+		editRuleTitle: (pattern: string) => `Edit rule — current: ${pattern}`,
+		rulesPersisted: (models: string, disabled: string) =>
+			`[anchored-tools] rules → [${models}] / disabled → [${disabled}] (persisted)`,
 		done: "✅ Done",
 		atLeastOneModel: "[anchored-tools] at least one target model is required",
 		modelsPersisted: (models: string) => `[anchored-tools] models → ${models} (persisted)`,
@@ -87,8 +105,26 @@ const I18N = {
 		subagentExemption: (state: string) => `🤖 子代理豁免（${state}）`,
 		language: (name: string) => `🌐 语言（${name}）`,
 		back: "🔙 返回上级",
-		modelsTitle: (models: string) => `目标模型（当前: ${models}）`,
-		modelToggle: (name: string, on: boolean) => `${on ? "☑" : "☐"} ${name}（点击切换）`,
+		modelsTitle: (on: number, total: number) => `目标模型（生效 ${on}/${total}）`,
+		rulesHeader: "── 匹配规则 ──",
+		modelsHeader: "── 模型 ──",
+		ruleEntry: (pattern: string, n: number) => `☑ 📜 ${pattern}（命中 ${n}）`,
+		addRule: "➕ 添加规则（glob 或 /正则/flags）",
+		addRuleTitle: "新增匹配规则",
+		addRulePlaceholder: "/deepseek.*flash/i  |  *deepseek-v4*  |  provider/model-id",
+		ruleDuplicate: (rule: string) => `[anchored-tools] 规则已存在：${rule}`,
+		ruleInvalid: (rule: string) => `[anchored-tools] 非法正则语法：${rule}`,
+		modelToggle: (name: string, ruleCovered: boolean, on: boolean) =>
+			`${on ? "☑" : "☐"}${ruleCovered ? " 📜" : ""} ${name}`,
+		ruleDisabledEntry: (pattern: string) => `⏸ 📜 ${pattern}（已停用）`,
+		ruleActionTitle: (pattern: string) => `规则：${pattern}`,
+		ruleEdit: "✏️ 编辑（重新输入）",
+		ruleDisable: "⏸ 停用（保留，可再启用）",
+		ruleEnable: "▶️ 启用",
+		ruleDelete: "🗑 彻底删除",
+		editRuleTitle: (pattern: string) => `编辑规则 — 当前：${pattern}`,
+		rulesPersisted: (models: string, disabled: string) =>
+			`[anchored-tools] 规则 → [${models}] / 停用 → [${disabled}]（已持久化）`,
 		done: "✅ 完成",
 		atLeastOneModel: "[anchored-tools] 至少保留一个目标模型",
 		modelsPersisted: (models: string) => `[anchored-tools] models → ${models}（已持久化）`,
@@ -240,20 +276,34 @@ export function registerAnchoredToolsCommand(pi: ExtensionAPI): void {
 				// ── 层级菜单（返回上级 / Esc 都回到上级；仅顶层 Esc 退出整个菜单）──
 				const PRESET_NAMES = ["anchor", "anchor-restore", "minimal", "native"] as PresetName[];
 
-				/** 目标模型勾选菜单（动态发现 DeepSeek 模型，未来改名/新增无需改代码） */
+				/**
+				 * 目标模型菜单 —— 两个正交指示器：
+				 *  - 模型区：☐/☑ = 手动状态（点击一律加/删 provider 限定精确条目）；框后 📜 = 被非精确规则覆盖
+				 *    （实际生效 = 框 ∨ 📜，标题"生效 N/M"按实际生效计数）
+				 *  - 规则区：☑ 📜 模式（命中 N）= 生效；⏸ 📜 模式 = 已停用（disabledModels 暂存，不参与匹配）
+				 *    点击规则 → 子菜单：编辑 / 停用或启用 / 删除
+				 *  - ➕ 添加规则 → input 弹窗；若已在停用区则自动启用
+				 */
 				const showModelsMenu = async (): Promise<boolean> => {
 					while (true) {
 						const cur = freshCfg();
 						const t = makeT(cur.locale);
-						const currentModels = cur.models;
-
-						// 从模型注册表发现可用的 DeepSeek 模型（内置 + models.json 自定义）。
-						// getAvailable() 仅返回已配置鉴权的模型；不可用时退化为 getAll()。
-						const discovered: { key: string; label: string }[] = [];
-						const push = (key: string, label: string) => {
-							if (!key || discovered.some((d) => d.key === key)) return;
-							discovered.push({ key, label });
+						const patterns = cur.models;
+						const disabled = cur.disabledModels;
+						// 规则写入统一走这里（同时维护 models / disabledModels）
+						const writeRules = (m: string[], d: string[]) => {
+							if (writeConfig({ models: m, disabledModels: d })) {
+								ctx.ui.notify(t("rulesPersisted", m.join(", ") || t("none"), d.join(", ") || t("none")), "info");
+							}
 						};
+						// 形如 /…/flags 却编译失败 → 非法正则（避免静默存成永远匹配不上的 glob）
+						const badRule = (rule: string): boolean =>
+							/^\/.+\/[a-z]*$/s.test(rule) && !parseRegexPattern(rule);
+
+						// 发现模型：DeepSeek 系 ∪ 被任一现有规则命中（含自定义正则，如 /qwen.*/）。
+						// getAvailable() 仅返回已配置鉴权的模型；不可用时退化为 getAll()。
+						const discovered: { id: string; provider: string }[] = [];
+						const seen = new Set<string>();
 						try {
 							const registry = ctx.modelRegistry;
 							const available = registry?.getAvailable?.() ?? [];
@@ -261,39 +311,162 @@ export function registerAnchoredToolsCommand(pi: ExtensionAPI): void {
 							for (const m of all) {
 								const id = String((m as { id?: string }).id ?? "");
 								const prov = String((m as { provider?: string }).provider ?? "");
-								if (!id || !/deepseek/i.test(`${prov}/${id}`)) continue;
-								// 裸 id 含 "/" 时，锚定匹配需要前导 * 才能命中（见 config.modelMatches）
-								push(id.includes("/") ? `*${id}` : id, `${prov}/${id}`);
+								const qualified = `${prov}/${id}`;
+								if (!id || seen.has(qualified)) continue;
+								if (!/deepseek/i.test(qualified) && !modelMatches(id, prov, patterns)) continue;
+								seen.add(qualified);
+								discovered.push({ id, provider: prov });
 							}
 						} catch {
-							/* 注册表不可用则只显示已配置模式 */
+							/* 注册表不可用则只显示规则区 */
 						}
-						// 已配置但未被发现的模式（自定义 glob / 正则）也要可切换
-						for (const p of currentModels) push(p, p);
-						discovered.sort((a, b) => a.label.localeCompare(b.label));
+						discovered.sort((a, b) => `${a.provider}/${a.id}`.localeCompare(`${b.provider}/${b.id}`));
 
-						const byOption = new Map<string, string>();
-						const options = discovered.map((d) => {
-							const opt = t("modelToggle", d.label, currentModels.includes(d.key));
-							byOption.set(opt, d.key);
-							return opt;
+						// 模型区：☐/☑ = 手动状态（有无精确条目）；📜 = 被非精确规则覆盖。
+						const modelEntries = discovered.map((m) => {
+							const qualified = `${m.provider}/${m.id}`;
+							const exactHit = patterns.find(
+								(p) => isExactPattern(p) && modelMatches(m.id, m.provider, [p]),
+							);
+							const ruleCovered = patterns.some(
+								(p) => !isExactPattern(p) && modelMatches(m.id, m.provider, [p]),
+							);
+							return {
+								...m,
+								qualified,
+								explicit: exactHit !== undefined,
+								effective: exactHit !== undefined || ruleCovered,
+								label: t("modelToggle", qualified, ruleCovered, exactHit !== undefined),
+							};
 						});
+						// 规则区：未被"精确条目吸附"的生效模式 + 全部停用模式
+						const isAdsorbed = (p: string) =>
+							isExactPattern(p) && modelEntries.some((e) => modelMatches(e.id, e.provider, [p]));
+						const ruleEntries = [
+							...patterns
+								.filter((p) => !isAdsorbed(p))
+								.map((p) => ({
+									pattern: p,
+									active: true,
+									label: t(
+										"ruleEntry",
+										p,
+										discovered.filter((m) => modelMatches(m.id, m.provider, [p])).length,
+									),
+								})),
+							...disabled.map((p) => ({ pattern: p, active: false, label: t("ruleDisabledEntry", p) })),
+						];
+
+						// 单条规则的管理子菜单：编辑 / 停用或启用 / 删除
+						const ruleAction = async (r: { pattern: string; active: boolean }): Promise<void> => {
+							while (true) {
+								const sub = await ctx.ui.select(t("ruleActionTitle", r.pattern), [
+									t("ruleEdit"),
+									r.active ? t("ruleDisable") : t("ruleEnable"),
+									t("ruleDelete"),
+									t("back"),
+								]);
+								if (!sub || sub === t("back")) return;
+								if (sub === t("ruleEdit")) {
+									const raw = await ctx.ui.input(t("editRuleTitle", r.pattern), r.pattern);
+									const rule = (raw ?? "").trim();
+									if (!rule || rule === r.pattern) continue; // 取消 / 未变更
+									if (patterns.includes(rule) || disabled.includes(rule)) {
+										ctx.ui.notify(t("ruleDuplicate", rule), "warning");
+										continue;
+									}
+									if (badRule(rule)) {
+										ctx.ui.notify(t("ruleInvalid", rule), "warning");
+										continue;
+									}
+									if (r.active) writeRules(patterns.map((p) => (p === r.pattern ? rule : p)), disabled);
+									else writeRules(patterns, disabled.map((p) => (p === r.pattern ? rule : p)));
+									return;
+								}
+								if (sub === t("ruleDisable")) {
+									if (patterns.length <= 1) {
+										ctx.ui.notify(t("atLeastOneModel"), "warning");
+										return;
+									}
+									writeRules(patterns.filter((p) => p !== r.pattern), [...disabled, r.pattern]);
+									return;
+								}
+								if (sub === t("ruleEnable")) {
+									writeRules(
+										patterns.includes(r.pattern) ? patterns : [...patterns, r.pattern],
+										disabled.filter((p) => p !== r.pattern),
+									);
+									return;
+								}
+								// 彻底删除：生效区最后一条 → 守卫
+								if (r.active && patterns.length <= 1) {
+									ctx.ui.notify(t("atLeastOneModel"), "warning");
+									return;
+								}
+								if (r.active) writeRules(patterns.filter((p) => p !== r.pattern), disabled);
+								else writeRules(patterns, disabled.filter((p) => p !== r.pattern));
+								return;
+							}
+						};
+
+						const options: string[] = [];
+						const actions = new Map<string, () => void | Promise<void>>();
+						options.push(t("rulesHeader"));
+						for (const r of ruleEntries) {
+							options.push(r.label);
+							actions.set(r.label, () => ruleAction(r));
+						}
+						options.push(t("addRule"));
+						actions.set(t("addRule"), async () => {
+							const raw = await ctx.ui.input(t("addRuleTitle"), t("addRulePlaceholder"));
+							const rule = (raw ?? "").trim();
+							if (!rule) return; // Esc / 空输入 → 取消
+							if (patterns.includes(rule)) {
+								ctx.ui.notify(t("ruleDuplicate", rule), "warning");
+								return;
+							}
+							if (badRule(rule)) {
+								ctx.ui.notify(t("ruleInvalid", rule), "warning");
+								return;
+							}
+							// 停用区已有 → 直接启用，而非报"已存在"
+							if (disabled.includes(rule)) {
+								writeRules([...patterns, rule], disabled.filter((p) => p !== rule));
+								return;
+							}
+							writeRules([...patterns, rule], disabled);
+						});
+						if (modelEntries.length > 0) options.push(t("modelsHeader"));
+						for (const e of modelEntries) {
+							options.push(e.label);
+							actions.set(e.label, () => {
+								if (e.explicit) {
+									// 手动关闭：移除指向该模型的精确条目（📜 覆盖与否由图标自解释）
+									const next = patterns.filter(
+										(p) => !(isExactPattern(p) && modelMatches(e.id, e.provider, [p])),
+									);
+									if (next.length === 0) {
+										ctx.ui.notify(t("atLeastOneModel"), "warning");
+										return;
+									}
+									if (writeConfig({ models: next })) {
+										ctx.ui.notify(t("modelsPersisted", next.join(", ")), "info");
+									}
+									return;
+								}
+								// 手动开启：写入 provider 限定精确条目
+								const next = [...patterns, e.qualified];
+								if (writeConfig({ models: next })) {
+									ctx.ui.notify(t("modelsPersisted", next.join(", ")), "info");
+								}
+							});
+						}
 						options.push(t("done"));
 
-						const choice = await ctx.ui.select(t("modelsTitle", currentModels.join(", ") || t("none")), options);
+						const on = modelEntries.filter((e) => e.effective).length;
+						const choice = await ctx.ui.select(t("modelsTitle", on, discovered.length), options);
 						if (!choice || choice === t("done")) return true; // Esc / Done → back to advanced
-						const model = byOption.get(choice);
-						if (!model) continue;
-						const next = new Set(currentModels);
-						if (next.has(model)) next.delete(model);
-						else next.add(model);
-						if (next.size === 0) {
-							ctx.ui.notify(t("atLeastOneModel"), "warning");
-							continue;
-						}
-						if (writeConfig({ models: [...next] })) {
-							ctx.ui.notify(t("modelsPersisted", [...next].join(", ")), "info");
-						}
+						await actions.get(choice)?.(); // 区块标题行不在 actions 里 → 点击仅重绘
 					}
 				};
 

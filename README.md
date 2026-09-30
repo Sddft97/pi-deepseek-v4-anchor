@@ -89,6 +89,7 @@ arrays replace wholesale, project wins).
   "enabled": true,
   "preset": "anchor",                 // "anchor" | "anchor-restore" | "minimal" | "native"
   "models": ["/deepseek.*(flash|pro)/i"],   // glob or /regex/flags; "provider/modelId" or bare id
+  "disabledModels": [],               // rules disabled from the menu (kept for re-enabling; never matched)
   "exemptSubagents": false,           // false: subagents bootstrap too (default)
   "locale": "en",                     // UI language: "en" | "zh"
   "notify": true,
@@ -102,6 +103,9 @@ arrays replace wholesale, project wins).
   // "bootstrapMaxTokens": 1024       // first-request output cap; explicit null disables
 }
 ```
+
+The `models` list can also be managed from `/anchored-tools` → Advanced →
+Target models (`➕ Add rule` input dialog, rule removal, per-model toggles).
 
 ### Matching future / renamed models
 
@@ -123,7 +127,36 @@ Because the matcher is re-evaluated per request, adding a newly released model
 is a one-line settings edit (or a toggle in `/anchored-tools` → Advanced →
 Target models). That menu is generated from the live model registry, so any
 DeepSeek model pi knows about appears there automatically — no code change or
-hardcoded name list is required.
+hardcoded name list is required. Models matched by custom regex/glob rules
+(e.g. `/qwen.*/`) appear there too.
+
+### Target-models menu semantics
+
+Two orthogonal indicators — the checkbox answers "did I manually enable
+this model?", the 📜 suffix answers "is a rule covering it?":
+
+```
+── Matching rules ──
+☑ 📜 /deepseek.*(flash|pro)/i (4 matched)   ← click = edit / disable / delete
+⏸ 📜 /deepseek-r1/ (disabled)                ← click = edit / enable / delete
+➕ Add rule (glob or /regex/flags)
+── Models ──
+☑ 📜 bai/deepseek-v4-flash          manually on + covered by a rule
+☑ opencode/deepseek-v3              manually on only
+☐ 📜 openrouter/deepseek/deepseek-r1  rule-covered only (anchored!)
+☐ someprovider/deepseek-v2          off
+```
+
+- A model is anchored when **box ∨ 📜**; the title shows `N/M anchored`.
+- Clicking a model is a uniform toggle: it adds/removes a provider-qualified
+  exact entry (`provider/modelId`) — never a wildcard.
+- Rules are managed per-rule via a submenu: ✏️ edit (input dialog),
+  ⏸ disable (parked in `disabledModels`, kept for one-click re-enabling,
+  never matched), 🗑 delete. `➕ Add rule` accepts glob / `/regex/flags` /
+  `provider/model-id`; entering a disabled rule re-enables it.
+- Duplicate and invalid-regex inputs are rejected with a notice; at least
+  select limitation); to keep consecutive toggles cheap, the section you
+  last touched moves to the top and the touched entry becomes its first row.
 
 ### Presets
 
@@ -155,7 +188,7 @@ Level 1:                     Level 2 (switch preset):
 └──────────────────────────┘  🔙 Back
 
 Level 2 (advanced) → Level 3:
-🎛 Target models (dynamic DeepSeek list, ✅ Done)
+🎛 Target models (rules + effective model list, ✅ Done)
 🤖 Subagent exemption (enabled/disabled)
 🌐 Language (English)
 🔙 Back
