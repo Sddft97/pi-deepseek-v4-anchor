@@ -89,6 +89,77 @@ test("toolName reads function.name, custom.name, and top-level name", () => {
   assert.equal(C.toolName({}), undefined);
 });
 
+test("modelMatches: globs, provider-qualified globs, and /regex/ patterns", () => {
+  const m = C.modelMatches;
+  // existing glob behaviour is unchanged
+  assert.equal(m("deepseek-v4-flash", "bai", ["deepseek-v4-flash"]), true);
+  assert.equal(m("deepseek-v4-flash", "bai", ["deepseek-v4-pro"]), false);
+  assert.equal(m("deepseek-v4-pro", "x", ["deepseek-v4-*"]), true);
+  assert.equal(m("deepseek/deepseek-v4.1-flash", "openrouter-siliconflow", ["openrouter-siliconflow/*"]), true);
+  // a bare glob cannot match a provider-prefixed id (anchored ^...$)
+  assert.equal(m("deepseek/deepseek-v4.1-flash", "openrouter-siliconflow", ["deepseek-v4.1-flash"]), false);
+  // regex is tested against both bare id and provider/id, so prefixes are transparent
+  assert.equal(m("deepseek/deepseek-v4.1-flash", "openrouter-siliconflow", ["/deepseek.*flash/i"]), true);
+  assert.equal(m("deepseek-v4-flash", "bai", ["/deepseek.*flash/i"]), true);
+  assert.equal(m("deepseek-v4-pro", "x", ["/deepseek.*flash/i"]), false);
+  // invalid regex falls back to glob (never throws)
+  assert.equal(m("deepseek-v4-flash", "bai", ["/[/"]), false);
+});
+
+test("parseRegexPattern / matchPattern split regex from glob", () => {
+  assert.deepEqual(C.parseRegexPattern("/foo.*bar/i"), { source: "foo.*bar", flags: "i" });
+  assert.equal(C.parseRegexPattern("foo*bar"), undefined);
+  assert.equal(C.parseRegexPattern("/[/"), undefined); // invalid regex
+  assert.equal(C.matchPattern("/^a.c$/", "abc"), true);
+  assert.equal(C.matchPattern("a*c", "abc"), true);
+});
+
+test("DEFAULT_MODELS covers future DeepSeek flash/pro names", () => {
+  assert.deepEqual(C.DEFAULT_MODELS, ["/deepseek.*(flash|pro)/i"]);
+  assert.equal(C.modelMatches("deepseek/deepseek-v4.1-flash", "openrouter-siliconflow", C.DEFAULT_MODELS), true);
+  assert.equal(C.modelMatches("deepseek-v4-pro", "bai", C.DEFAULT_MODELS), true);
+  assert.equal(C.modelMatches("deepseek/deepseek-r1", "openrouter", C.DEFAULT_MODELS), false);
+});
+
+test("Target-models menu discovers DeepSeek models from the registry", async () => {
+  const { events } = instantiate();
+  const seen = [];
+  const script = [
+    "\u2699\ufe0f Advanced settings",
+    (opts) => opts.find((o) => o.startsWith("\ud83c\udf9b")),
+    "\u2705 Done",
+    "\ud83d\udd19 Back",
+    undefined,
+  ];
+  let step = 0;
+  const ctx = {
+    ...mkCtx("menu1", "deepseek-v4.1-flash"),
+    modelRegistry: {
+      getAvailable: () => [
+        { id: "deepseek/deepseek-v4.1-flash", provider: "openrouter-siliconflow" },
+        { id: "deepseek-v4-flash", provider: "bai" },
+        { id: "gpt-5", provider: "openai" },
+      ],
+      getAll: () => [],
+    },
+    ui: {
+      setStatus: () => {},
+      notify: () => {},
+      select: async (title, options) => {
+        seen.push({ title, options: [...options] });
+        const s = script[step++];
+        return typeof s === "function" ? s(options) : s;
+      },
+    },
+  };
+  await events["cmd:anchored-tools"].handler("", ctx);
+  const menu = seen.find((s) => s.title.startsWith("Target models"));
+  assert.ok(menu, "models menu should open");
+  assert.ok(menu.options.some((o) => o.includes("deepseek/deepseek-v4.1-flash")));
+  assert.ok(menu.options.some((o) => o.includes("bai/deepseek-v4-flash")));
+  assert.ok(!menu.options.some((o) => o.includes("gpt-5")));
+});
+
 test("str_replace_editor is registered only for target-model sessions", async () => {
   const { events, tools } = instantiate();
   await events.session_start({ type: "session_start" }, mkCtx("s1", "deepseek-v4-pro"));

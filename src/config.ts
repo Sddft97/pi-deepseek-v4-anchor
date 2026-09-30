@@ -9,7 +9,7 @@ import { join } from "node:path";
 /** DSH minimal preset 的完整 persona（逐字节一致，不得改写）。 */
 export const MINIMAL_SYSTEM_PROMPT = "You are a helpful software engineer assistant.";
 
-export const DEFAULT_MODELS = ["deepseek-v4-pro", "deepseek-v4-flash"];
+export const DEFAULT_MODELS = ["/deepseek.*(flash|pro)/i"];
 export const DEFAULT_BOOTSTRAP_TOOLS = ["bash", "str_replace_editor"];
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -221,10 +221,38 @@ export function matchGlob(pattern: string, value: string): boolean {
 	return regex.test(value);
 }
 
+/**
+ * 正则模式：形如 `/pattern/flags` 的字符串按 JS 正则处理，其余按 glob。
+ * 这样未来模型命名结构变化时，只需在 settings.json 里改模式即可，无需改代码：
+ *   "models": ["/deepseek.*flash/i", "*deepseek-v4*"]
+ * 非法正则返回 undefined（回退为 glob 匹配）。
+ */
+export function parseRegexPattern(pattern: string): { source: string; flags: string } | undefined {
+	const m = /^\/(.*)\/([a-z]*)$/s.exec(pattern);
+	if (!m) return undefined;
+	try {
+		new RegExp(m[1], m[2]); // 提前编译，非法正则视为非正则模式
+	} catch {
+		return undefined;
+	}
+	return { source: m[1], flags: m[2] };
+}
+
+/** 单个模式匹配：正则或 glob。 */
+export function matchPattern(pattern: string, value: string): boolean {
+	const rx = parseRegexPattern(pattern);
+	if (rx) return new RegExp(rx.source, rx.flags).test(value);
+	return matchGlob(pattern, value);
+}
+
 export function modelMatches(modelId: string, provider: string, patterns: string[]): boolean {
 	if (patterns.length === 0) return false;
 	const qualified = `${provider}/${modelId}`;
-	return patterns.some((p) =>
-		p.includes("/") ? matchGlob(p, qualified) : matchGlob(p, qualified) || matchGlob(p, modelId),
-	);
+	return patterns.some((p) => {
+		// 正则模式同时测试裸 id 与 provider/id，方便写 /deepseek.*flash/i
+		if (parseRegexPattern(p)) return matchPattern(p, modelId) || matchPattern(p, qualified);
+		return p.includes("/")
+			? matchPattern(p, qualified)
+			: matchPattern(p, qualified) || matchPattern(p, modelId);
+	});
 }
