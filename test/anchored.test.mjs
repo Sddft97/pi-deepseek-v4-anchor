@@ -392,3 +392,333 @@ test("log helpers create the tmp dir and append lines", async () => {
   const content = readFileSync(logNs.MARKER_PATH, "utf8");
   assert.ok(content.includes(line));
 });
+
+// ──────────────────────────────────────────────────────────────────────────
+// Target models 菜单新语义：勾=生效态、行为由来源决定（规则区 + 模型区）
+// ──────────────────────────────────────────────────────────────────────────
+
+const SETTINGS_PATH = join(homedir(), ".pi", "agent", "settings.json");
+
+function writeSettings(at) {
+  mkdirSync(join(homedir(), ".pi", "agent"), { recursive: true });
+  writeFileSync(SETTINGS_PATH, JSON.stringify({ anchoredTools: { locale: "en", ...at } }, null, 2) + "\n");
+  return () => JSON.parse(readFileSync(SETTINGS_PATH, "utf8")).anchoredTools ?? {};
+}
+
+function menuHarness({ registry, pick, input }) {
+  const selects = [];
+  const notifications = [];
+  const ctx = {
+    ...mkCtx("menu-semantic"),
+    ...(registry ? { modelRegistry: registry } : {}),
+    ui: {
+      setStatus: () => {},
+      notify: (msg, level) => notifications.push({ msg, level }),
+      input: async () => input,
+      select: async (title, options) => {
+        selects.push({ title, options: [...options] });
+        return pick(selects.length, title, options);
+      },
+    },
+  };
+  return { ctx, selects, notifications, run: () => instantiate().events["cmd:anchored-tools"].handler("", ctx) };
+}
+
+// 常用退出脚本片段：models Done → advanced Back → top Esc
+const EXIT = ["\u2705 Done", "\ud83d\udd19 Back", undefined];
+
+const DS_REGISTRY = {
+  getAvailable: () => [
+    { id: "deepseek/deepseek-v4.1-flash", provider: "openrouter-siliconflow" },
+    { id: "deepseek-v4-flash", provider: "bai" },
+    { id: "deepseek/deepseek-r1", provider: "openrouter" },
+    { id: "gpt-5", provider: "openai" },
+  ],
+  getAll: () => [],
+};
+
+test("matchingPattern / isExactPattern: first hit + exact detection", () => {
+  assert.equal(C.matchingPattern("deepseek-v4-flash", "bai", ["/deepseek.*flash/i"]), "/deepseek.*flash/i");
+  assert.equal(C.matchingPattern("deepseek-v4-flash", "bai", ["other", "deepseek-v4-flash"]), "deepseek-v4-flash");
+  assert.equal(C.matchingPattern("deepseek-v4-flash", "bai", ["deepseek-v4-pro"]), undefined);
+  assert.equal(C.matchingPattern("deepseek/deepseek-v4.1-flash", "openrouter", ["openrouter/*"]), "openrouter/*");
+  assert.equal(C.isExactPattern("deepseek-v4-flash"), true);
+  assert.equal(C.isExactPattern("bai/deepseek-v4-flash"), true);
+  assert.equal(C.isExactPattern("*deepseek-v4*"), false);
+  assert.equal(C.isExactPattern("/deepseek.*/"), false);
+});
+
+test("menu: box = manual state; rule coverage shown as 📜 suffix; click is uniform toggle", async () => {
+  const read = writeSettings({}); // default models = ["/deepseek.*(flash|pro)/i"]
+  const h = menuHarness({
+    registry: DS_REGISTRY,
+    pick: (n, title, options) => {
+      if (n === 1) return "\u2699\ufe0f Advanced settings";
+      if (n === 2) return options.find((o) => o.startsWith("\ud83c\udf9b"));
+      if (n === 3) return options.find((o) => o.includes("openrouter-siliconflow/deepseek/deepseek-v4.1-flash"));
+      return EXIT[n - 4];
+    },
+  });
+  await h.run();
+  const menu = h.selects.find((s) => s.title.startsWith("Target models"));
+  assert.ok(menu, "models menu opened");
+  // 标题按实际生效计数（DS_REGISTRY 发现 3 个，规则命中 2 个）
+  assert.match(menu.title, /\(2\/3 anchored\)/);
+  // 规则区：命中数标注
+  assert.ok(menu.options.some((o) => o.includes("\ud83d\udcdc") && o.includes("(2 matched)")), String(menu.options));
+  // 被规则覆盖：框=☐（无手动条目）+ 📜 后缀
+  const flash = menu.options.find((o) => o.includes("openrouter-siliconflow/deepseek/deepseek-v4.1-flash"));
+  assert.match(flash, /^\u2610 \ud83d\udcdc /);
+  // 未被任何规则命中：☐ 且无 📜
+  const r1 = menu.options.find((o) => o.includes("openrouter/deepseek/deepseek-r1"));
+  assert.match(r1, /^\u2610 [^\ud83d]/);
+  assert.doesNotMatch(r1, /\ud83d\udcdc/);
+  // 点击规则覆盖的模型 = 统一手动开关：加显式条目（provider 限定）
+  assert.deepEqual(read().models, ["/deepseek.*(flash|pro)/i", "openrouter-siliconflow/deepseek/deepseek-v4.1-flash"]);
+  // 重绘：☑ + 📜（手动 + 规则覆盖同时存在）
+  const redraw = h.selects[3];
+  const flash2 = redraw.options.find((o) => o.includes("openrouter-siliconflow/deepseek/deepseek-v4.1-flash"));
+  assert.match(flash2, /^\u2611 \ud83d\udcdc /);
+});
+
+test("menu: turning an off model on writes a provider-qualified exact pattern", async () => {
+  const read = writeSettings({});
+  const h = menuHarness({
+    registry: DS_REGISTRY,
+    pick: (n, title, options) => {
+      if (n === 1) return "\u2699\ufe0f Advanced settings";
+      if (n === 2) return options.find((o) => o.startsWith("\ud83c\udf9b"));
+      if (n === 3) return options.find((o) => o.includes("openrouter/deepseek/deepseek-r1"));
+      return EXIT[n - 4];
+    },
+  });
+  await h.run();
+  assert.deepEqual(read().models, ["/deepseek.*(flash|pro)/i", "openrouter/deepseek/deepseek-r1"]);
+  // 重绘后：☑ 手动开（r1 不被规则覆盖 → 无 📜）
+  const redraw = h.selects[3];
+  const r1 = redraw.options.find((o) => o.includes("openrouter/deepseek/deepseek-r1"));
+  assert.match(r1, /^\u2611 [^\ud83d]/);
+});
+
+test("menu: explicit toggle-off removes entry; redraw shows \u2610 \ud83d\udcdc when rule still covers", async () => {
+  const read = writeSettings({
+    models: ["/deepseek.*flash/i", "openrouter-siliconflow/deepseek/deepseek-v4.1-flash"],
+  });
+  const h = menuHarness({
+    registry: DS_REGISTRY,
+    pick: (n, title, options) => {
+      if (n === 1) return "\u2699\ufe0f Advanced settings";
+      if (n === 2) return options.find((o) => o.startsWith("\ud83c\udf9b"));
+      if (n === 3) return options.find((o) => o.includes("openrouter-siliconflow/deepseek/deepseek-v4.1-flash"));
+      return EXIT[n - 4];
+    },
+  });
+  await h.run();
+  assert.deepEqual(read().models, ["/deepseek.*flash/i"]);
+  // 不再有 stillCovered 提示（📜 图标自解释）
+  assert.ok(!h.notifications.some((x) => x.msg.includes("still matched")));
+  // 重绘：手动关但规则仍覆盖 → ☐ 📜
+  const redraw = h.selects[3];
+  const entry = redraw.options.find((o) => o.includes("openrouter-siliconflow/deepseek/deepseek-v4.1-flash"));
+  assert.match(entry, /^\u2610 \ud83d\udcdc /);
+});
+
+test("menu: exact entries adsorb into models section; last-model guard fires", async () => {
+  const read = writeSettings({ models: ["bai/deepseek-v4-flash"] });
+  const h = menuHarness({
+    registry: DS_REGISTRY,
+    pick: (n, title, options) => {
+      if (n === 1) return "\u2699\ufe0f Advanced settings";
+      if (n === 2) return options.find((o) => o.startsWith("\ud83c\udf9b"));
+      if (n === 3) return options.find((o) => o.includes("bai/deepseek-v4-flash"));
+      return EXIT[n - 4];
+    },
+  });
+  await h.run();
+  const menu = h.selects[2];
+  const entry = menu.options.find((o) => o.includes("bai/deepseek-v4-flash"));
+  assert.match(entry, /^\u2611 [^\ud83d]/); // 手动开、无宽规则 → 无 📜
+  // 规则区常驻但无规则条目，只剩 ➕ 入口
+  assert.ok(!menu.options.some((o) => o.includes("\ud83d\udcdc")));
+  assert.ok(menu.options.some((o) => o.includes("\u2795")));
+  // 关闭唯一条目触发守卫，配置不变
+  assert.deepEqual(read().models, ["bai/deepseek-v4-flash"]);
+  assert.ok(h.notifications.some((x) => x.msg.includes("at least one target model")));
+});
+
+test("menu: rule submenu — disable parks in disabledModels, enable restores, delete removes", async () => {
+  // 停用
+  {
+    const read = writeSettings({ models: ["/deepseek.*flash/i", "/deepseek-r1/"] });
+    const h = menuHarness({
+      registry: DS_REGISTRY,
+      pick: (n, title, options) => {
+        if (n === 1) return "\u2699\ufe0f Advanced settings";
+        if (n === 2) return options.find((o) => o.startsWith("\ud83c\udf9b"));
+        if (n === 3) return options.find((o) => o.includes("\ud83d\udcdc") && o.includes("/deepseek-r1/"));
+        if (n === 4) return options.find((o) => o.includes("Disable"));
+        return EXIT[n - 5];
+      },
+    });
+    await h.run();
+    assert.deepEqual(read().models, ["/deepseek.*flash/i"]);
+    assert.deepEqual(read().disabledModels, ["/deepseek-r1/"]);
+  }
+  // 启用（停用条目显示 ⏸，子菜单提供 Enable）
+  {
+    const read = writeSettings({ models: ["/deepseek.*flash/i"], disabledModels: ["/deepseek-r1/"] });
+    const h = menuHarness({
+      registry: DS_REGISTRY,
+      pick: (n, title, options) => {
+        if (n === 1) return "\u2699\ufe0f Advanced settings";
+        if (n === 2) return options.find((o) => o.startsWith("\ud83c\udf9b"));
+        if (n === 3) return options.find((o) => o.includes("\u23f8") && o.includes("/deepseek-r1/"));
+        if (n === 4) return options.find((o) => o.includes("Enable"));
+        return EXIT[n - 5];
+      },
+    });
+    await h.run();
+    assert.deepEqual(read().models, ["/deepseek.*flash/i", "/deepseek-r1/"]);
+    assert.deepEqual(read().disabledModels, []);
+  }
+  // 彻底删除
+  {
+    const read = writeSettings({ models: ["/deepseek.*flash/i", "/deepseek-r1/"] });
+    const h = menuHarness({
+      registry: DS_REGISTRY,
+      pick: (n, title, options) => {
+        if (n === 1) return "\u2699\ufe0f Advanced settings";
+        if (n === 2) return options.find((o) => o.startsWith("\ud83c\udf9b"));
+        if (n === 3) return options.find((o) => o.includes("\ud83d\udcdc") && o.includes("/deepseek-r1/"));
+        if (n === 4) return options.find((o) => o.includes("Delete"));
+        return EXIT[n - 5];
+      },
+    });
+    await h.run();
+    assert.deepEqual(read().models, ["/deepseek.*flash/i"]);
+    assert.deepEqual(read().disabledModels, []);
+  }
+  // 删除生效区最后一条 → 守卫
+  {
+    const read = writeSettings({ models: ["/deepseek.*flash/i"] });
+    const h = menuHarness({
+      registry: DS_REGISTRY,
+      pick: (n, title, options) => {
+        if (n === 1) return "\u2699\ufe0f Advanced settings";
+        if (n === 2) return options.find((o) => o.startsWith("\ud83c\udf9b"));
+        if (n === 3) return options.find((o) => o.includes("\ud83d\udcdc") && o.includes("/deepseek.*flash/i"));
+        if (n === 4) return options.find((o) => o.includes("Delete"));
+        return EXIT[n - 5];
+      },
+    });
+    await h.run();
+    assert.deepEqual(read().models, ["/deepseek.*flash/i"]);
+    assert.ok(h.notifications.some((x) => x.msg.includes("at least one target model")));
+  }
+});
+
+test("menu: rule submenu — edit replaces the pattern in place", async () => {
+  const read = writeSettings({ models: ["/deepseek.*flash/i", "/deepseek-r1/"] });
+  const h = menuHarness({
+    registry: DS_REGISTRY,
+    input: "/deepseek-r2/",
+    pick: (n, title, options) => {
+      if (n === 1) return "\u2699\ufe0f Advanced settings";
+      if (n === 2) return options.find((o) => o.startsWith("\ud83c\udf9b"));
+      if (n === 3) return options.find((o) => o.includes("\ud83d\udcdc") && o.includes("/deepseek-r1/"));
+      if (n === 4) return options.find((o) => o.includes("Edit"));
+      return EXIT[n - 5];
+    },
+  });
+  await h.run();
+  assert.deepEqual(read().models, ["/deepseek.*flash/i", "/deepseek-r2/"]);
+});
+
+test("menu: add-rule persists, validates, and auto-enables disabled rules", async () => {
+  // 成功添加：重绘显示命中数
+  {
+    const read = writeSettings({});
+    const h = menuHarness({
+      registry: DS_REGISTRY,
+      input: "/deepseek-r1/",
+      pick: (n, title, options) => {
+        if (n === 1) return "\u2699\ufe0f Advanced settings";
+        if (n === 2) return options.find((o) => o.startsWith("\ud83c\udf9b"));
+        if (n === 3) return options.find((o) => o.includes("\u2795"));
+        return EXIT[n - 4];
+      },
+    });
+    await h.run();
+    assert.deepEqual(read().models, ["/deepseek.*(flash|pro)/i", "/deepseek-r1/"]);
+    assert.deepEqual(read().disabledModels, []);
+    const redraw = h.selects[3];
+    assert.ok(redraw.options.some((o) => o.includes("\ud83d\udcdc /deepseek-r1/ (1 matched)")), String(redraw.options));
+  }
+  // 输入停用区已有的规则 → 自动启用而非报重复
+  {
+    const read = writeSettings({ models: ["/deepseek.*flash/i"], disabledModels: ["/deepseek-r1/"] });
+    const h = menuHarness({
+      registry: DS_REGISTRY,
+      input: "/deepseek-r1/",
+      pick: (n, title, options) => {
+        if (n === 1) return "\u2699\ufe0f Advanced settings";
+        if (n === 2) return options.find((o) => o.startsWith("\ud83c\udf9b"));
+        if (n === 3) return options.find((o) => o.includes("\u2795"));
+        return EXIT[n - 4];
+      },
+    });
+    await h.run();
+    assert.deepEqual(read().models, ["/deepseek.*flash/i", "/deepseek-r1/"]);
+    assert.deepEqual(read().disabledModels, []);
+  }
+  // 重复（生效区）/ 非法正则 / 空输入 → 拒绝且不写入
+  for (const [bad, want] of [
+    ["/deepseek.*(flash|pro)/i", "rule already exists"],
+    ["/[/", "invalid regex syntax"],
+    [undefined, null],
+  ]) {
+    const read = writeSettings({});
+    const h = menuHarness({
+      registry: DS_REGISTRY,
+      input: bad,
+      pick: (n, title, options) => {
+        if (n === 1) return "\u2699\ufe0f Advanced settings";
+        if (n === 2) return options.find((o) => o.startsWith("\ud83c\udf9b"));
+        if (n === 3) return options.find((o) => o.includes("\u2795"));
+        return EXIT[n - 4];
+      },
+    });
+    await h.run();
+    assert.equal(read().models, undefined, `no write for input=${JSON.stringify(bad)}`);
+    if (want) assert.ok(h.notifications.some((x) => x.msg.includes(want)));
+  }
+});
+
+test("menu: discovery scope = DeepSeek \u222a rule matches (qwen appears, gpt-5 does not)", async () => {
+  writeSettings({ models: ["/qwen.*/i"] });
+  const registry = {
+    getAvailable: () => [
+      { id: "qwen3-max", provider: "alibaba" },
+      { id: "deepseek/deepseek-v4.1-flash", provider: "openrouter-siliconflow" },
+      { id: "gpt-5", provider: "openai" },
+    ],
+    getAll: () => [],
+  };
+  const h = menuHarness({
+    registry,
+    pick: (n, title, options) => {
+      if (n === 1) return "\u2699\ufe0f Advanced settings";
+      if (n === 2) return options.find((o) => o.startsWith("\ud83c\udf9b"));
+      return EXIT[n - 3];
+    },
+  });
+  await h.run();
+  const menu = h.selects.find((s) => s.title.startsWith("Target models"));
+  // qwen3-max：deepseek 名称过滤不命中，但被 /qwen.*/ 命中 → 出现且 ☐ 📜（规则覆盖，无手动条目）
+  const qwen = menu.options.find((o) => o.includes("alibaba/qwen3-max"));
+  assert.ok(qwen, "qwen entry present");
+  assert.match(qwen, /^\u2610 \ud83d\udcdc /);
+  // 纯 DeepSeek 名称过滤：无规则命中也可见
+  assert.ok(menu.options.some((o) => o.includes("openrouter-siliconflow/deepseek/deepseek-v4.1-flash")));
+  assert.ok(!menu.options.some((o) => o.includes("gpt-5")));
+});
