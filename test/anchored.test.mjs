@@ -406,7 +406,7 @@ test("non-target models never see str_replace_editor", async () => {
   assert.ok(!out.tools.some((t) => t.function.name === "str_replace_editor"));
 });
 
-test("native preset (enabled:false) never touches the request, even when promoted", async () => {
+test("native preset (enabled:false) touches nothing but hides our own tool", async () => {
   writeSettings({ preset: "native" });
   try {
     const { events } = instantiate();
@@ -422,13 +422,73 @@ test("native preset (enabled:false) never touches the request, even when promote
       tools: mkTools(["bash", "read", "str_replace_editor", "ls"]),
     };
     const out = await runRequest(events, payload, mkCtx("s7", "deepseek-v4-pro"));
-    assert.equal(out, payload);
+    // 不锤定、不改 prompt、不封顶；唯独本扩展自己的工具要摸掉（旧版 pi 不认 defaultActive:false，
+    // 注册即激活，不摸就会污染“对照基线”）
     assert.equal(out.messages[0].content, "S");
     assert.equal(out.max_tokens, 64000);
-    assert.equal(out.tools.length, 4);
+    assert.deepEqual(out.tools.map((t) => t.function.name), ["bash", "read", "ls"]);
   } finally {
     writeSettings({}); // 还原，避免影响其他用例
   }
+});
+
+test("fail-safe: a skipped bootstrap does not capture the host prompt for reinjection", async () => {
+  const { events } = instantiate();
+  const ctx = mkCtx("sC1", "deepseek-v4-pro");
+  // 引导工具缺失 → fail-safe，整个引导跳过（包括提示词捕获）
+  await runRequest(events, {
+    model: "deepseek-v4-pro",
+    messages: [{ role: "system", content: "HOST PROMPT" }, { role: "user", content: "q" }],
+    tools: mkTools(["bash", "read"]),
+  }, ctx);
+  // 之后晋升：没捕获过就不应该注回，否则宿主提示词会在 system 之外重复出现一遍
+  const reinject = await events.before_agent_start(
+    { type: "before_agent_start" },
+    {
+      ...ctx,
+      sessionManager: {
+        getSessionId: () => "sC1",
+        buildContextEntries: () => [{ message: { role: "assistant" } }],
+      },
+    },
+  );
+  assert.equal(reinject, undefined);
+});
+
+test("route B: a never-anchored session keeps a host max_tokens equal to the cap", async () => {
+  const { events } = instantiate();
+  const ctx = mkCtx("sC2", "deepseek-v4-pro");
+  await events.session_start(
+    { type: "session_start", reason: "startup" },
+    { ...ctx, sessionManager: { getSessionId: () => "sC2", buildContextEntries: () => [] } },
+  );
+  const out = await runRequest(events, {
+    model: "deepseek-v4-pro",
+    max_tokens: 1024, // 宿主自己的值，恰好等于 bootstrapMaxTokens
+    messages: [
+      { role: "system", content: "PI FULL PROMPT" },
+      { role: "user", content: "q" },
+      { role: "assistant", content: "a" },
+    ],
+    tools: mkTools(["bash", "read"]),
+  }, ctx);
+  assert.equal(out.max_tokens, 1024); // 不能被当成“我们注入的那个”剥掉
+});
+
+test("session_start without buildContextEntries is treated as not-fresh (conservative)", async () => {
+  const { events } = instantiate();
+  const ctx = { ...mkCtx("sC3", "deepseek-v4-pro"), sessionManager: { getSessionId: () => "sC3" } };
+  await events.session_start({ type: "session_start", reason: "startup" }, ctx);
+  const out = await runRequest(events, {
+    model: "deepseek-v4-pro",
+    messages: [
+      { role: "system", content: "PI FULL PROMPT" },
+      { role: "user", content: "q" },
+      { role: "assistant", content: "a" },
+    ],
+    tools: mkTools(["bash", "read"]),
+  }, ctx);
+  assert.equal(out.messages[0].content, "You are a helpful software engineer assistant.");
 });
 
 test("interactive menu exposes completions with descriptions", () => {

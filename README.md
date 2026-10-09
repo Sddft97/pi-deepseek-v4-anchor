@@ -130,7 +130,8 @@ bootstrapped — a session that never anchored is sent as the host built it (ful
 catalog plus pi's own prompt), since anchoring is a first-request
 transformation. `minimal` is the exception to that column: it never promotes, so
 a mid-session switch gets the Minimal pair like any other request. `native`
-leaves every request exactly as the host built it.
+anchors nothing: it hides the extension's own tool and leaves the request
+otherwise exactly as the host built it.
 
 ### Subagents
 

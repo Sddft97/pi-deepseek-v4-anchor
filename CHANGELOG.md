@@ -27,7 +27,9 @@ adheres to [Semantic Versioning](https://semver.org/).
   its system prompt replaced by the Minimal persona — the "baseline" preset was
   sending "full catalog + Minimal persona", a combination neither upstream
   condition covered. A disabled configuration now returns before any
-  transformation and logs `disabled (enabled=false: host request kept)`
+  transformation and logs `disabled (enabled=false: no anchoring, editor
+  hidden)`; it only hides the extension's own tool, so a `str_replace_editor`
+  that older pi versions auto-activate cannot leak into the baseline
 - The startup marker (`anchored-loaded.log`) now logs the resolved **global**
   `models` patterns and `enabled` state instead of the hardcoded built-in
   defaults it always printed before. The docs claimed the line contained the

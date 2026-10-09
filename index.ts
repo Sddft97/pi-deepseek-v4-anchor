@@ -139,9 +139,9 @@ export default function (pi: ExtensionAPI) {
 		try {
 			const sid = ctx.sessionManager?.getSessionId?.() ?? "";
 			if (!sid) return;
-			const entries = ctx.sessionManager?.buildContextEntries?.() ?? [];
-			// 只看有没有 message entry——真·新会话也有 model_change / thinking_level_change 条目；
-			// 拿不到 entries / 抛错时不入集合 → 后续走保守路径
+			const entries = ctx.sessionManager?.buildContextEntries?.();
+			if (!entries) return; // 拿不到 entries 就不下判断 → 不 fresh（保守）
+			// 只看有没有 message entry——真·新会话也有 model_change / thinking_level_change 条目
 			if (!entries.some((e) => (e as { message?: unknown })?.message !== undefined)) {
 				freshSessions.add(sid);
 			}
@@ -224,10 +224,13 @@ export default function (pi: ExtensionAPI) {
 
 			const modelId = String(payload.model ?? ctx.model?.id ?? "");
 			const provider = String(ctx.model?.provider ?? "");
-			// native（enabled:false）= 零介入：不改 persona、不动工具目录、不封顶。
-			// 放在 modelMatches 之前——它与“是不是目标模型”无关。
+			// native（enabled:false）= 零介入：不改 persona、不动工具目录、不封顶。放在 modelMatches 之
+			// 前——它与“是不是目标模型”无关。唯一例外：本扩展自己的工具也要摸掉——旧版 pi（0.84.x 的
+			// ToolDefinition 没有 defaultActive）注册即激活，不摸就会把 str_replace_editor 泄露进
+			// “对照基线”的请求里。新版 pi（有 defaultActive:false）这里是空操作。
 			if (!cfg.enabled) {
-				activity(`req model=${provider}/${modelId} → disabled (enabled=false: host request kept)`);
+				stripToolFromPayload(payload, EDITOR_TOOL_NAME);
+				activity(`req model=${provider}/${modelId} → disabled (enabled=false: no anchoring, editor hidden)`);
 				return;
 			}
 			if (!modelMatches(modelId, provider, cfg.models)) {
@@ -277,20 +280,9 @@ export default function (pi: ExtensionAPI) {
 					`msgs=${messages.length} promoteOn=${cfg.promoteOn} → ${promoted ? "promoted" : "bootstrap-candidate"}`,
 			);
 
-			// 引导期捕获原始系统提示词：晋升后（保留 persona 时）以 user message 注回，模型不丢 pi 上下文
-			if (
-				!promoted &&
-				!cfg.restorePrompt &&
-				cfg.contextReinject &&
-				cfg.bootstrapPrompt === "minimal" &&
-				!originalPrompts.has(sid)
-			) {
-				const sysText = adapter.getSystemText(payload);
-				if (typeof sysText === "string" && sysText.length > 0) {
-					originalPrompts.set(sid, sysText);
-				}
-			}
-
+			// 引导期捕获原始系统提示词：晋升后（保留 persona 时）以 user message 注回，模型不丢 pi 上下文。
+			// 注：必须在 fail-safe 判定**之后**才捕获（见下方 bootstrap 分支）——否则缺引导工具、
+			// 引导被跳过的会话也会存下原文，之后晋升时把已經在 system 里的宿主提示词重复注回一遍。
 			// 晋升通知（一次性）
 			if (cfg.notify && sid && anchoredSessions.get(sid) && promoted && !notified.has(sid)) {
 				notified.add(sid);
@@ -305,25 +297,30 @@ export default function (pi: ExtensionAPI) {
 				// 保持宿主原样，回到验证过的 native 基线，而不是“全量目录 + 引导 persona”这种半锚定状态
 				// （那种状态下也没有原文可注回，pi 的规则会直接丢掉）。
 				// 判据：非 fresh（resume/fork，无从判断）一律保守沿用；fresh 的只看本进程是否真的引导过。
-			const keepPersona = !freshSessions.has(sid) || anchoredInProcess.has(sid);
+				// 本会话是否“确实锚定过”：非 fresh（resume/fork，无从判断）按已锚定处理（保守沿用）。
+				// 没锚定过的会话同时跳过 persona **和**封顶剥离——两条都是“引导注入过才需要撒回”的东西，
+				// 一道剥掉宿主自己的 max_tokens（恰好等于 1024 时）就不是“一字不改”了。
+				const anchoredSession = !freshSessions.has(sid) || anchoredInProcess.has(sid);
 				let changed = false;
 				let out: Record<string, unknown> = payload;
-				if (keepPersona && !cfg.restorePrompt && cfg.bootstrapPrompt !== "none") {
+				if (anchoredSession && !cfg.restorePrompt && cfg.bootstrapPrompt !== "none") {
 					const p = applyPromptMode(adapter, out, cfg.bootstrapPrompt, cfg.bootstrapTools);
 					if (p.changed) {
 						out = p.payload;
 						changed = true;
 					}
 				}
-				// 剥离注入的输出预算上限，恢复宿主默认
-				const capped = capMaxTokens(adapter, out, cfg.bootstrapMaxTokens, true);
-				if (capped.changed) {
-					out = capped.payload;
-					changed = true;
+				if (anchoredSession) {
+					// 剥离注入的输出预算上限，恢复宿主默认
+					const capped = capMaxTokens(adapter, out, cfg.bootstrapMaxTokens, true);
+					if (capped.changed) {
+						out = capped.payload;
+						changed = true;
+					}
 				}
 				activity(
 					`req model=${provider}/${modelId} session=${sid} → promoted (full catalog${changed ? ", prompt kept" : ""}` +
-						`${keepPersona ? "" : ", host prompt kept: never anchored"})`,
+						`${anchoredSession ? "" : ", host request kept: never anchored"})`,
 				);
 				return changed ? out : undefined;
 			}
@@ -349,7 +346,18 @@ export default function (pi: ExtensionAPI) {
 				if (filtered.changed) filteredTools = filtered.tools as ToolLike[];
 			}
 
-			// 2) 系统提示词
+			// 2) 系统提示词（捕获原始提示词也放在这一步之前——fail-safe 已在上面 return 了）
+			if (
+				!cfg.restorePrompt &&
+				cfg.contextReinject &&
+				cfg.bootstrapPrompt === "minimal" &&
+				!originalPrompts.has(sid)
+			) {
+				const sysText = adapter.getSystemText(next);
+				if (typeof sysText === "string" && sysText.length > 0) {
+					originalPrompts.set(sid, sysText);
+				}
+			}
 			const prompt = applyPromptMode(adapter, next, cfg.bootstrapPrompt, cfg.bootstrapTools);
 			if (prompt.changed) next = prompt.payload;
 			if (filteredTools) next = { ...next, tools: filteredTools };
