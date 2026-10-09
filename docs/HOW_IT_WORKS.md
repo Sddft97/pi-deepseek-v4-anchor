@@ -37,11 +37,29 @@ session loses the trajectory. Anchored Standard gets both.
 **Tool declaration.** `str_replace_editor` is registered once when the
 extension loads (`defaultActive: false`) and declared to the model per run from
 `before_agent_start`, because pi builds a run's tool loadout after that hook —
-sso a `setActiveTools()` call there takes effect for the same request. Anything
+so a `setActiveTools()` call there takes effect for the same request. Anything
 that changes the model *after* session creation (picking another model in a
 session that started on a non-target one, a subagent session) therefore still
 gets the Minimal pair; the declaration follows the current model, not the model
 that happened to be active at `session_start`.
+
+**Who keeps the persona.** After promotion the persona stays — but only for a
+session that actually bootstrapped. A session that reaches promotion *without*
+having anchored (it started on a non-target model, and the switch to a target
+model happened later) is sent untouched instead: full catalog, pi's own system
+prompt, no output cap. Anchoring is a first-request transformation, so such a
+session cannot earn the DSH trajectory anyway — swapping its prompt would only
+drop pi's rules, with nothing captured to reinject (`contextReinject` runs
+during bootstrap).
+
+The classification is per session. A session whose history was already
+non-empty at `session_start` (resume, fork, `pi -c`) is treated as anchored,
+because it cannot be classified either way — this keeps resumed and forked
+sessions behaving exactly as before. Note that `session_start.reason` cannot be
+used for the fresh/resume distinction: resuming at startup reports `startup`
+too; the check is the absence of any message entry. The two sets that back this
+are deliberately kept across `/reload`, since the same session re-emits
+`session_start` there.
 
 **Sticky promotion.** Once promoted, the session stays promoted across
 compaction: promotion is re-detected from history, and once seen it is

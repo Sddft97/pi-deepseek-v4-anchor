@@ -34,6 +34,15 @@ adheres to [Semantic Versioning](https://semver.org/).
 - Activity log: the fail-safe line now reads `...; skipping bootstrap (native
   request kept)`, and every change of tool declaration is logged as
   `editor-declared` / `editor-withdrawn`
+- The bootstrap persona is now kept after promotion **only for sessions that
+  actually bootstrapped**. A session that reaches promotion without having
+  anchored — it started on a non-target model and switched to a target model
+  later — is sent untouched instead: full catalog, pi's own system prompt, no
+  output cap (the measured native baseline). Previously it got "full catalog +
+  Minimal persona": a combination neither upstream condition covered, which
+  also dropped pi's rules with nothing captured to reinject. Sessions whose
+  history was already non-empty at `session_start` (resume, fork, `pi -c`) keep
+  the previous behaviour, as do `anchor-restore`, `minimal` and `native`
 
 ## [1.2.0] - 2026-10-01
 
