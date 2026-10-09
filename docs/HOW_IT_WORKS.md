@@ -109,8 +109,11 @@ anthropic-messages payloads and `promoteOn: "tool-call"` could not see
 - **Status bar** — while bootstrapping, `[⛓ bootstrap: bash+str_replace_editor]`
   is shown; it clears on promotion.
 - **Activity log** — `~/.pi/agent/tmp/anchored-activity.log`: every request is
-  logged with session id, model, tool names, and the decision
-  (`bootstrap` / `promoted` / `not-targeted` / `subagent-exempt` / error).
+  logged with session id, model, tool names, and the decision (`bootstrap` /
+  `promoted` / `not-targeted` / `subagent-exempt` / `disabled`), plus tool
+  declaration changes (`editor-declared` / `editor-withdrawn`) and, for a
+  promoted request, whether the persona was kept or skipped because the session
+  never anchored.
 - **Debug log** — `~/.pi/agent/tmp/anchored-debug.log` (enable via
   `"debug": true` or `PI_ANCHORED_DEBUG=1`): per-request prompt mode and final
   tool list.
