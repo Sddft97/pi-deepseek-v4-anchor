@@ -34,6 +34,7 @@ const { mod: C, factory } = await load();
 function instantiate() {
   const events = {};
   const tools = [];
+  const active = [];
   factory({
     on: (name, handler) => {
       events[name] = handler;
@@ -42,9 +43,20 @@ function instantiate() {
       events[`cmd:${name}`] = cmd;
     },
     getAllTools: () => tools,
-    registerTool: (tool) => tools.push(tool),
+    // pi 的 active set：只有激活的工具才会声明给模型，defaultActive:false 的工具注册≠激活
+    getActiveTools: () => [...active],
+    setActiveTools: (names) => {
+      active.length = 0;
+      for (const name of names) {
+        if (tools.some((t) => t.name === name)) active.push(name);
+      }
+    },
+    registerTool: (tool) => {
+      tools.push(tool);
+      if (tool.defaultActive !== false) active.push(tool.name);
+    },
   });
-  return { events, tools };
+  return { events, tools, active };
 }
 
 function mkCtx(sid, model = "deepseek-v4-pro") {
@@ -160,19 +172,68 @@ test("Target-models menu discovers DeepSeek models from the registry", async () 
   assert.ok(!menu.options.some((o) => o.includes("gpt-5")));
 });
 
-test("str_replace_editor is registered only for target-model sessions", async () => {
-  const { events, tools } = instantiate();
-  await events.session_start({ type: "session_start" }, mkCtx("s1", "deepseek-v4-pro"));
+test("str_replace_editor: registered at load, declared only on target-model runs", async () => {
+  const { events, tools, active } = instantiate();
+  // 注册与模型无关：扩展一加载就已注册，但默认不激活（defaultActive:false）
   assert.ok(tools.some((t) => t.name === "str_replace_editor"));
+  assert.ok(!active.includes("str_replace_editor"));
 
-  const { events: ev2, tools: tools2 } = instantiate();
-  await ev2.session_start({ type: "session_start" }, mkCtx("s2", "claude-sonnet"));
-  assert.ok(!tools2.some((t) => t.name === "str_replace_editor"));
+  // 目标模型的轮次 → 声明给模型
+  await events.before_agent_start({ type: "before_agent_start" }, mkCtx("s1", "deepseek-v4-pro"));
+  assert.ok(active.includes("str_replace_editor"));
+
+  // 切到非目标模型 → 撒回声明
+  await events.before_agent_start({ type: "before_agent_start" }, mkCtx("s1", "claude-sonnet"));
+  assert.ok(!active.includes("str_replace_editor"));
+});
+
+test("regression: model switched after session start still bootstraps the first request", async () => {
+  const { events, active } = instantiate();
+  // 会话创建时可以是非目标模型（默认 glm）：注册已不再依赖 session_start，
+  // 也不再依赖“会话创建那一刻的模型”是什么——这正是旧实现漏掉引导工具的根因。
+  // 注册与 session_start 无关：这里不跑任何 session_start，工具依然能声明出去
+  assert.ok(!active.includes("str_replace_editor"), "inactive until a run needs it");
+
+  // 什么都没发，先切到 deepseek，然后才发第一条消息
+  const ctx = mkCtx("s7", "deepseek-v4-flash");
+  await events.before_agent_start({ type: "before_agent_start" }, ctx);
+  assert.ok(active.includes("str_replace_editor"), "editor declared for this run");
+
+  const out = await runRequest(events, {
+    model: "deepseek-v4-flash",
+    max_tokens: 64000,
+    messages: [{ role: "system", content: "S" }, { role: "user", content: "q" }],
+    tools: mkTools(["bash", "read", "str_replace_editor", "ls"]),
+  }, ctx);
+  assert.deepEqual(out.tools.map((t) => t.function.name).sort(), ["bash", "str_replace_editor"]);
+  assert.equal(out.max_tokens, 1024);
+  assert.equal(out.messages[0].content, "You are a helpful software engineer assistant.");
+});
+
+test("regression: missing bootstrap tool keeps the native request (no half-applied bootstrap)", async () => {
+  const { events } = instantiate();
+  const payload = {
+    model: "deepseek-v4-pro",
+    max_tokens: 64000,
+    messages: [{ role: "system", content: "S" }, { role: "user", content: "q" }],
+    tools: mkTools(["bash", "read", "ls"]), // 引导工具缺失
+  };
+  const out = await runRequest(events, payload, mkCtx("s8"));
+  // 整个引导都不做：persona 不换、工具不过滤、输出也不封顶
+  assert.equal(out, payload);
+  assert.equal(out.messages[0].content, "S");
+  assert.equal(out.max_tokens, 64000);
+});
+
+test("non-target runs do not withdraw a user-enabled editor tool", async () => {
+  const { events, active } = instantiate();
+  active.push("str_replace_editor"); // 模拟用户 --tools str_replace_editor / defaultTools
+  await events.before_agent_start({ type: "before_agent_start" }, mkCtx("s9", "claude-sonnet"));
+  assert.ok(active.includes("str_replace_editor"));
 });
 
 test("str_replace_editor view/create/str_replace/insert work over local fs", async () => {
-  const { events, tools } = instantiate();
-  await events.session_start({ type: "session_start" }, mkCtx("s3", "deepseek-v4-pro"));
+  const { tools } = instantiate();
   const ed = tools.find((t) => t.name === "str_replace_editor");
   assert.ok(ed);
 

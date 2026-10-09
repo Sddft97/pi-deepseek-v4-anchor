@@ -29,7 +29,8 @@ Then `/reload` (or restart pi).
 
 Out of the box, every DeepSeek flash/pro model (any provider, any naming — via the default rule `/deepseek.*(flash|pro)/i`) is anchored:
 
-1. Start a session on such a model — the status bar shows `[⛓ bootstrap: bash+str_replace_editor]`
+1. Run a turn on such a model — the status bar shows `[⛓ bootstrap: bash+str_replace_editor]`
+   (switching to the model mid-session works too: the tool is declared per run, not at session start)
 2. The first turn runs with the Minimal pair + persona and a capped output budget
 3. The first tool call promotes the session — full catalog restored, cap removed, status cleared
 

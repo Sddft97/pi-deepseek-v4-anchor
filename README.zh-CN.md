@@ -29,7 +29,8 @@ pi install npm:pi-deepseek-v4-anchor
 
 开箱即用：默认规则 `/deepseek.*(flash|pro)/i` 锚定所有 DeepSeek flash/pro 模型（任意 provider、任意命名）：
 
-1. 用此类模型开会话，状态栏出现 `[⛓ bootstrap: bash+str_replace_editor]`
+1. 在该类模型上发一轮消息，状态栏出现 `[⛓ bootstrap: bash+str_replace_editor]`
+   （会话中途切到该模型同样生效：工具按轮声明，不再依赖会话创建时的模型）
 2. 第一轮以 Minimal 工具对 + persona、受限输出预算运行
 3. 首个工具调用即晋升——恢复全目录、解除封顶、清除状态
 

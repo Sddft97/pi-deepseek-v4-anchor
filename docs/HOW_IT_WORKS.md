@@ -34,6 +34,15 @@ session loses the trajectory. Anchored Standard gets both.
    pi context is re-injected as a hidden user message so the model does not
    lose pi's rules. The cap is removed.
 
+**Tool declaration.** `str_replace_editor` is registered once when the
+extension loads (`defaultActive: false`) and declared to the model per run from
+`before_agent_start`, because pi builds a run's tool loadout after that hook —
+sso a `setActiveTools()` call there takes effect for the same request. Anything
+that changes the model *after* session creation (picking another model in a
+session that started on a non-target one, a subagent session) therefore still
+gets the Minimal pair; the declaration follows the current model, not the model
+that happened to be active at `session_start`.
+
 **Sticky promotion.** Once promoted, the session stays promoted across
 compaction: promotion is re-detected from history, and once seen it is
 remembered in-process, so the collapsed history no longer causes an accidental
@@ -41,8 +50,10 @@ re-bootstrap.
 
 **Safety nets.** A server 4xx promotes the session (avoids retry loops with a
 stripped catalog). Any extension error is swallowed — the request always goes
-out. If a configured bootstrap tool is missing from the catalog, the tool
-filter is skipped for that request with a warning.
+out. If a configured bootstrap tool is missing from the catalog, the **whole**
+bootstrap is skipped for that request (persona, tool filter and output cap all
+left alone), so the request goes out as the host's native one with a warning —
+never as "Minimal persona + full catalog".
 
 ## Payload format adapters
 
@@ -61,7 +72,7 @@ anthropic-messages payloads and `promoteOn: "tool-call"` could not see
 
 | Module | Responsibility |
 |---|---|
-| `index.ts` | Extension entry: event wiring, bootstrap/promotion state machine, session maps |
+| `index.ts` | Extension entry: event wiring, bootstrap/promotion state machine, session maps, per-run declaration of `str_replace_editor` |
 | `src/config.ts` | Presets, settings.json load/merge/validation, pattern matching (glob / regex / exact) |
 | `src/format.ts` | Payload format detection + per-format adapters (prompt swap, tool filter, max-token cap) |
 | `src/promotion.ts` | Promotion detection from payload history and from pi session entries |

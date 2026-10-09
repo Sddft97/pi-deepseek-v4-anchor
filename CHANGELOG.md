@@ -6,6 +6,28 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The bootstrap tool is no longer tied to the model that was active when the
+  session started.** `str_replace_editor` is registered once at extension load
+  (`defaultActive: false`) and declared to the model per run from
+  `before_agent_start` via `setActiveTools()`. Previously it was registered in
+  `session_start`, which only fires on session creation/replacement (and
+  `/reload`) — so a session that started on a non-target model (e.g. the default
+  one) and then switched to DeepSeek never got the tool. The bootstrap tool
+  check then failed and the request silently fell through to the fail-safe
+- A missing bootstrap tool now skips the **whole** bootstrap instead of only the
+  tool filter: persona, catalog and output cap are left untouched and the
+  request goes out as the host's native one. Previously the prompt swap had
+  already been applied, leaving "Minimal persona + full catalog" — a
+  combination neither upstream condition was measured on
+
+### Changed
+
+- Activity log: the fail-safe line now reads `...; skipping bootstrap (native
+  request kept)`, and every change of tool declaration is logged as
+  `editor-declared` / `editor-withdrawn`
+
 ## [1.2.0] - 2026-10-01
 
 ### Added

@@ -90,6 +90,9 @@ export { applyPromptMode, capMaxTokens };
 // 扩展主体
 // ────────────────────────────────────────────────────────────────────────────
 
+/** 引导工具名（激活同步与 payload 剥离共用）。 */
+const EDITOR_TOOL_NAME = "str_replace_editor";
+
 export default function (pi: ExtensionAPI) {
 	if (!envBool("PI_ANCHORED", true)) return;
 
@@ -114,7 +117,7 @@ export default function (pi: ExtensionAPI) {
 		lastUiCtx?.ui?.setStatus?.("anchored", undefined);
 	}
 
-	/** 从 payload.tools 里移除指定工具（用于非目标模型隐藏 str_replace_editor 等自定义工具）。 */
+	/** 从 payload.tools 里移除指定工具（兼底：应对 before_agent_start 之后模型才变化的情况）。 */
 	const stripToolFromPayload = (payload: Record<string, unknown>, name: string): void => {
 		const tools = payload.tools;
 		if (!Array.isArray(tools)) return;
@@ -125,22 +128,50 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
-	// 目标模型会话才注册 str_replace_editor（非目标模型看不到/用不到这个自定义工具）
-	pi.on("session_start", (_event, ctx) => {
-		try {
-			const cfg = resolveConfig(loadRawConfig(ctx.cwd, ctx.isProjectTrusted()));
-			const model = ctx.model;
-			if (!cfg.enabled || !model || !modelMatches(model.id, model.provider, cfg.models)) return;
-			// 防重复注册（session_start 可能对同一会话触发多次）
-			const exists = pi
-				.getAllTools?.()
-				?.some((t) => t.name === "str_replace_editor");
-			if (exists) return;
-			registerEditorTool(pi);
-		} catch {
-			/* 忽略：工具注册失败不应中断会话 */
+	/**
+	 * 注册与「声明给模型」分离。
+	 *
+	 * 之前是在 session_start 里按「当时的模型」注册 str_replace_editor，而 session_start 只在会话
+	 * 创建/替换（以及 /reload）时触发一次，切换模型不会重跑——于是「启动在非目标模型上、之后再切到
+	 * 目标模型」的会话永远拿不到这个引导工具，before_provider_request 只能 fail-safe。
+	 *
+	 * 现在：扩展加载时无条件注册（defaultActive:false，默认不声明给任何模型），是否声明由
+	 * before_agent_start 按当前模型逐轮决定——pi 官方的 dynamic tools 模式。
+	 */
+	try {
+		registerEditorTool(pi);
+	} catch {
+		/* 忽略：工具注册失败不应中断会话 */
+	}
+
+	/** 本扩展自己声明过 str_replace_editor 吗？只撤回自己加的那个，不动用户显式启用的。 */
+	let editorActivatedByUs = false;
+
+	/** 目标模型才把 str_replace_editor 声明给模型；非目标模型不声明。幂等：状态未变就不碰 loadout。 */
+	function syncEditorActivation(ctx: {
+		cwd: string;
+		isProjectTrusted(): boolean;
+		model?: { id: string; provider: string };
+	}): void {
+		const cfg = resolveConfig(loadRawConfig(ctx.cwd, ctx.isProjectTrusted()));
+		const model = ctx.model;
+		const wanted = Boolean(cfg.enabled && model && modelMatches(model.id, model.provider, cfg.models));
+		const active = pi.getActiveTools?.() ?? [];
+		const declared = active.includes(EDITOR_TOOL_NAME);
+		if (wanted) {
+			if (declared) return;
+			pi.setActiveTools?.([...active, EDITOR_TOOL_NAME]);
+			editorActivatedByUs = true;
+			activity(`editor-declared for target model ${model?.provider}/${model?.id}`);
+			return;
 		}
-	});
+		// 非目标模型：只撤回本扩展自己声明的，避免与用户显式的 --tools / defaultTools 打架
+		if (declared && editorActivatedByUs) {
+			pi.setActiveTools?.(active.filter((name) => name !== EDITOR_TOOL_NAME));
+			editorActivatedByUs = false;
+			activity("editor-withdrawn (non-target model)");
+		}
+	}
 
 	pi.on("before_provider_request", (event, ctx) => {
 		try {
@@ -157,7 +188,7 @@ export default function (pi: ExtensionAPI) {
 			const provider = String(ctx.model?.provider ?? "");
 			if (!modelMatches(modelId, provider, cfg.models)) {
 				// 非目标模型：隐藏自定义引导工具（应对会话中途切到非目标模型的情况）
-				stripToolFromPayload(payload, "str_replace_editor");
+				stripToolFromPayload(payload, EDITOR_TOOL_NAME);
 				activity(`req model=${provider}/${modelId} → not-targeted (models=${cfg.models.join(",")})`);
 				return;
 			}
@@ -250,26 +281,28 @@ export default function (pi: ExtensionAPI) {
 			// ── 引导阶段 ──
 			let next: Record<string, unknown> = { ...payload };
 
-			// 1) 系统提示词
-			const prompt = applyPromptMode(adapter, next, cfg.bootstrapPrompt, cfg.bootstrapTools);
-			if (prompt.changed) next = prompt.payload;
-
-			// 2) 工具目录（fail-safe：缺失则跳过整个引导并告警）
+			// 1) 工具目录（fail-safe：缺引导工具则整个引导都不做，保持宿主原生请求）
+			//    必须在改 persona 之前判定：否则会留下「minimal persona + 全量工具目录」这种两不像状态
+			//    —— 既不是验证过的 Minimal 条件，也不是验证过的 native 基线。
 			const tools = payload.tools as ToolLike[] | undefined;
+			let filteredTools: ToolLike[] | undefined;
 			if (Array.isArray(tools) && tools.length > 0) {
 				const names = tools.map((t) => toolName(t)).filter((n): n is string => typeof n === "string");
 				const { missing } = resolveBootstrap(names, cfg.bootstrapTools);
 				if (missing.length > 0) {
-					const warn = `[anchored-tools] bootstrap tools missing from catalog: ${missing.join(", ")}; skipping filter`;
+					const warn = `[anchored-tools] bootstrap tools missing from catalog: ${missing.join(", ")}; skipping bootstrap (native request kept)`;
 					activity(`fail-safe: ${warn}`);
 					console.warn(warn);
-					return prompt.changed ? next : undefined;
+					return;
 				}
 				const filtered = filterTools(tools, cfg.bootstrapTools);
-				if (filtered.changed) {
-					next = { ...next, tools: filtered.tools };
-				}
+				if (filtered.changed) filteredTools = filtered.tools as ToolLike[];
 			}
+
+			// 2) 系统提示词
+			const prompt = applyPromptMode(adapter, next, cfg.bootstrapPrompt, cfg.bootstrapTools);
+			if (prompt.changed) next = prompt.payload;
+			if (filteredTools) next = { ...next, tools: filteredTools };
 
 			// 3) 输出预算封顶（可选）
 			const capped = capMaxTokens(adapter, next, cfg.bootstrapMaxTokens, false);
@@ -298,6 +331,13 @@ export default function (pi: ExtensionAPI) {
 	// 晋升后上下文注回：保留 persona（restorePrompt:false + contextReinject + minimal）时，
 	// 把引导期捕获的 pi 原始提示词以持久 user message 注入（一次性；resume 已注入则跳过）。
 	pi.on("before_agent_start", (event, ctx) => {
+		// 每轮开始前同步 str_replace_editor 的声明状态。pi 在 before_agent_start 之后才组装本轮的
+		// systemPrompt 与 tool loadout，所以这里 setActiveTools() 对同一次请求即生效。
+		try {
+			syncEditorActivation(ctx);
+		} catch {
+			/* 忽略：同步失败不影响本轮请求，下面照常做上下文注回 */
+		}
 		try {
 			const cfg = resolveConfig(loadRawConfig(ctx.cwd, ctx.isProjectTrusted()));
 			if (!cfg.enabled) return;
