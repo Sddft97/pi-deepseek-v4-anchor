@@ -112,6 +112,39 @@ export default function (pi: ExtensionAPI) {
 	const contextInjected = new Set<string>();
 	let lastUiCtx: { ui?: { setStatus?: (key: string, text?: string) => void } } | undefined;
 
+	/**
+	 * “这个会话到底锚定过没有”——只在**真·新会话**上才需要区分，所以用两个进程内集合：
+	 *
+	 * - `freshSessions`：会话建立时**还没有任何 message entry**（真·新会话）。resume / fork 一进来就
+	 *   带历史，无从判断，不入集合 → 后续走保守路径（沿用旧行为）。
+	 * - `anchoredInProcess`：本进程内确实跑过引导的会话（引导分支末尾写入）。
+	 *
+	 * 两个集合都**不在 session_shutdown 里清空**：同进程内切走再切回同一会话（switchSession / resume）
+	 * 时会重发 session_start，清掉就会丢掉“这个会话锚定过”的记忆，让已锚定会话的 persona 消失。
+	 * 按进程生命周期自然有界。（/reload 会重新实例化扩展、集合本来就是空的，那种情况由“非 fresh
+	 * 走保守路径”兜底。）
+	 *
+	 * 不能看 session_start.reason：`pi -c` / `--session` 启动即 resume 时 reason 也是 "startup"
+	 * （pi 里 sessionStartEvent === undefined → 默认值），会把 resume 误判成新会话。
+	 */
+	const freshSessions = new Set<string>();
+	const anchoredInProcess = new Set<string>();
+
+	pi.on("session_start", (_event, ctx) => {
+		try {
+			const sid = ctx.sessionManager?.getSessionId?.() ?? "";
+			if (!sid) return;
+			const entries = ctx.sessionManager?.buildContextEntries?.() ?? [];
+			// 只看有没有 message entry——真·新会话也有 model_change / thinking_level_change 条目；
+			// 拿不到 entries / 抛错时不入集合 → 后续走保守路径
+			if (!entries.some((e) => (e as { message?: unknown })?.message !== undefined)) {
+				freshSessions.add(sid);
+			}
+		} catch {
+			/* 忽略：判不出来就当非 fresh */
+		}
+	});
+
 	function promoteSession(sid: string): void {
 		anchoredSessions.set(sid, false); // 仍记着锚定过，但已晋升
 		lastUiCtx?.ui?.setStatus?.("anchored", undefined);
@@ -262,10 +295,15 @@ export default function (pi: ExtensionAPI) {
 			if (promoted) {
 				lastUiCtx = ctx;
 				promoteSession(sid);
-				// 工具已恢复全目录；是否保留引导提示词由 restorePrompt 决定（false = 整段会话保持，DSH 验证配置）
+				// 工具已恢复全目录。是否保留引导 persona 由 restorePrompt 决定（false = 保持），但**只对
+				// 确实锚定过的会话**：从没锚定过的会话（启动在非目标模型、中途才切进来的 fresh 会话）
+				// 保持宿主原样，回到验证过的 native 基线，而不是“全量目录 + 引导 persona”这种半锚定状态
+				// （那种状态下也没有原文可注回，pi 的规则会直接丢掉）。
+				// 判据：非 fresh（resume/fork，无从判断）一律保守沿用；fresh 的只看本进程是否真的引导过。
+			const keepPersona = !freshSessions.has(sid) || anchoredInProcess.has(sid);
 				let changed = false;
 				let out: Record<string, unknown> = payload;
-				if (!cfg.restorePrompt && cfg.bootstrapPrompt !== "none") {
+				if (keepPersona && !cfg.restorePrompt && cfg.bootstrapPrompt !== "none") {
 					const p = applyPromptMode(adapter, out, cfg.bootstrapPrompt, cfg.bootstrapTools);
 					if (p.changed) {
 						out = p.payload;
@@ -279,7 +317,8 @@ export default function (pi: ExtensionAPI) {
 					changed = true;
 				}
 				activity(
-					`req model=${provider}/${modelId} session=${sid} → promoted (full catalog${changed ? ", prompt kept" : ""})`,
+					`req model=${provider}/${modelId} session=${sid} → promoted (full catalog${changed ? ", prompt kept" : ""}` +
+						`${keepPersona ? "" : ", host prompt kept: never anchored"})`,
 				);
 				return changed ? out : undefined;
 			}
@@ -315,6 +354,7 @@ export default function (pi: ExtensionAPI) {
 			if (capped.changed) next = capped.payload;
 
 			anchoredSessions.set(sid, true);
+			anchoredInProcess.add(sid);
 			lastUiCtx = ctx;
 			ctx.ui?.setStatus?.("anchored", `[⛓ bootstrap: ${cfg.bootstrapTools.join("+")}]`);
 			activity(

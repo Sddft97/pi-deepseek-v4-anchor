@@ -32,12 +32,13 @@ async function load() {
 const { mod: C, factory } = await load();
 
 function instantiate() {
+  const handlers = {};
   const events = {};
   const tools = [];
   const active = [];
   factory({
     on: (name, handler) => {
-      events[name] = handler;
+      (handlers[name] ??= []).push(handler);
     },
     registerCommand: (name, cmd) => {
       events[`cmd:${name}`] = cmd;
@@ -56,8 +57,24 @@ function instantiate() {
       if (tool.defaultActive !== false) active.push(tool.name);
     },
   });
-  return { events, tools, active };
-}
+  // pi 对同一事件会跑全部 handler，这里如实串起来（before_provider_request 的返回值会成为
+  // 下一个 handler 的 payload）。只留最后一个会把新增 handler 静默丢掉。
+  for (const [name, list] of Object.entries(handlers)) {
+    events[name] = async (event, ctx) => {
+      let current = event;
+      let result;
+      for (const handler of list) {
+        const r = await handler(current, ctx);
+        if (r === undefined) continue;
+        result = r;
+        if (current && typeof current === "object" && "payload" in current) {
+          current = { ...current, payload: r };
+        }
+      }
+      return result;
+    };
+  }
+  return { events, tools, active };}
 
 function mkCtx(sid, model = "deepseek-v4-pro") {
   return {
@@ -294,6 +311,87 @@ test("promotion is sticky across compaction (history collapse does not re-anchor
   };
   const out3 = await runRequest(events, p3, ctx);
   assert.equal(out3 === undefined || out3.tools.length === 3, true);
+});
+
+test("route B: a fresh session that never anchored keeps the host prompt after promotion", async () => {
+  const { events } = instantiate();
+  const ctx = mkCtx("sB1", "deepseek-v4-pro");
+  // 真·新会话：session_start 时没有任何 message entry（只有 model_change 这类）
+  await events.session_start(
+    { type: "session_start", reason: "startup" },
+    {
+      ...ctx,
+      sessionManager: {
+        getSessionId: () => "sB1",
+        buildContextEntries: () => [{ type: "model_change" }, { type: "thinking_level_change" }],
+      },
+    },
+  );
+  // 跑到一半才切到目标模型：历史里已有 assistant 消息 → 直接 promoted
+  const payload = {
+    model: "deepseek-v4-pro",
+    max_tokens: 64000,
+    messages: [
+      { role: "system", content: "PI FULL PROMPT" },
+      { role: "user", content: "q" },
+      { role: "assistant", content: "a" },
+    ],
+    tools: mkTools(["bash", "read", "str_replace_editor", "ls"]),
+  };
+  const out = await runRequest(events, payload, ctx);
+  assert.equal(out, payload); // 一字不改（native 基线）
+  assert.equal(out.messages[0].content, "PI FULL PROMPT");
+  assert.equal(out.max_tokens, 64000);
+});
+
+test("route B: a bootstrapped fresh session still keeps the persona", async () => {
+  const { events } = instantiate();
+  const ctx = mkCtx("sB2", "deepseek-v4-pro");
+  await events.session_start(
+    { type: "session_start", reason: "startup" },
+    { ...ctx, sessionManager: { getSessionId: () => "sB2", buildContextEntries: () => [] } },
+  );
+  await runRequest(events, {
+    model: "deepseek-v4-pro",
+    messages: [{ role: "system", content: "S" }, { role: "user", content: "q" }],
+    tools: mkTools(["bash", "str_replace_editor", "ls"]),
+  }, ctx);
+  const out = await runRequest(events, {
+    model: "deepseek-v4-pro",
+    messages: [
+      { role: "system", content: "S" },
+      { role: "user", content: "q" },
+      { role: "assistant", content: "a" },
+    ],
+    tools: mkTools(["bash", "str_replace_editor", "ls"]),
+  }, ctx);
+  assert.equal(out.messages[0].content, "You are a helpful software engineer assistant.");
+});
+
+test("route B: resume/fork (history present at session_start) keeps the persona", async () => {
+  const { events } = instantiate();
+  const ctx = mkCtx("sB3", "deepseek-v4-pro");
+  // resume/fork 一进来就带历史，无从判断它锚定过没有 → 保守沿用旧行为
+  await events.session_start(
+    { type: "session_start", reason: "resume" },
+    {
+      ...ctx,
+      sessionManager: {
+        getSessionId: () => "sB3",
+        buildContextEntries: () => [{ type: "message", message: { role: "user" } }],
+      },
+    },
+  );
+  const out = await runRequest(events, {
+    model: "deepseek-v4-pro",
+    messages: [
+      { role: "system", content: "S" },
+      { role: "user", content: "q" },
+      { role: "assistant", content: "a" },
+    ],
+    tools: mkTools(["bash", "str_replace_editor", "ls"]),
+  }, ctx);
+  assert.equal(out.messages[0].content, "You are a helpful software engineer assistant.");
 });
 
 test("non-target models never see str_replace_editor", async () => {
