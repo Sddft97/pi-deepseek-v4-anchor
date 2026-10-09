@@ -46,6 +46,7 @@ import {
 	PRESETS,
 	readSettingsJson,
 	resolveConfig,
+	resolveGlobalConfig,
 } from "./src/config.js";
 import type { PayloadAdapter, PayloadFormat } from "./src/format.js";
 import {
@@ -96,8 +97,12 @@ const EDITOR_TOOL_NAME = "str_replace_editor";
 export default function (pi: ExtensionAPI) {
 	if (!envBool("PI_ANCHORED", true)) return;
 
-	// 无条件启动标记
-	appendLine(MARKER_PATH, `loaded models=${DEFAULT_MODELS.join(",")} v4.2`);
+	// 无条件启动标记：带生效的全局 models 规则（项目级 .pi/settings.json 覆盖在会话内生效，这里看不到）
+	const markerCfg = resolveGlobalConfig();
+	appendLine(
+		MARKER_PATH,
+		`loaded models=${markerCfg.models.join(",")} enabled=${markerCfg.enabled} v4.2`,
+	);
 
 	/** 本进程内实际锚定过的 sessionId → 是否仍处引导态。 */
 	const anchoredSessions = new Map<string, boolean>();

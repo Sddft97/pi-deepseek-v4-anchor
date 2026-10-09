@@ -577,6 +577,17 @@ test("log helpers create the tmp dir and append lines", async () => {
   assert.ok(content.includes(line));
 });
 
+test("startup marker reports the effective global models, not the built-in default", async () => {
+  const logNs = await jiti.import("../src/log.ts");
+  writeSettings({ models: ["/my-flash/i"] });
+  instantiate(); // 工厂在加载期写标记
+  const lines = readFileSync(logNs.MARKER_PATH, "utf8").trimEnd().split("\n");
+  const last = lines[lines.length - 1];
+  assert.ok(last.includes("models=/my-flash/i"), last);
+  assert.ok(!last.includes("(flash|pro)"), last);
+  writeSettings({}); // 还原，避免影响后续用例
+});
+
 // ──────────────────────────────────────────────────────────────────────────
 // Target models 菜单新语义：勾=生效态、行为由来源决定（规则区 + 模型区）
 // ──────────────────────────────────────────────────────────────────────────

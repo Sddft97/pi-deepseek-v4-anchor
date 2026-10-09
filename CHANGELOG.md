@@ -28,6 +28,11 @@ adheres to [Semantic Versioning](https://semver.org/).
   sending "full catalog + Minimal persona", a combination neither upstream
   condition covered. A disabled configuration now returns before any
   transformation and logs `disabled (enabled=false: host request kept)`
+- The startup marker (`anchored-loaded.log`) now logs the resolved **global**
+  `models` patterns and `enabled` state instead of the hardcoded built-in
+  defaults it always printed before. The docs claimed the line contained the
+  effective patterns, so it was repeatedly read as "my rules did not match"
+  when the real problem was elsewhere
 
 ### Changed
 

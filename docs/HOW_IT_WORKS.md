@@ -101,8 +101,11 @@ anthropic-messages payloads and `promoteOn: "tool-call"` could not see
 ## Diagnosing behavior
 
 - **Startup marker** — `~/.pi/agent/tmp/anchored-loaded.log`: one line per
-  load, includes the effective `models` patterns. Check this first to confirm
-  which version is active.
+  load, with the **global** effective `models` patterns and `enabled` state.
+  Check this first to confirm which version is active and what the global config
+  resolves to. Project-level `.pi/settings.json` overrides are not visible here
+  (they are merged per session), so the marker does not always describe the
+  final per-session value — the activity log's per-request lines do.
 - **Status bar** — while bootstrapping, `[⛓ bootstrap: bash+str_replace_editor]`
   is shown; it clears on promotion.
 - **Activity log** — `~/.pi/agent/tmp/anchored-activity.log`: every request is
