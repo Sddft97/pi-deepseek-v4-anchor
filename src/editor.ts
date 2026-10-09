@@ -277,5 +277,5 @@ export function registerEditorTool(pi: ExtensionAPI): void {
 			const text = editorExecute(params as EditorArgs, EDITOR_MAX_OUTPUT_CHARS);
 			return { content: [{ type: "text", text }], details: {} };
 		},
-	} as unknown as Parameters<typeof pi.registerTool>[0]);
+	});
 }
