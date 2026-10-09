@@ -121,6 +121,10 @@ pi install npm:pi-deepseek-v4-anchor
 | `minimal` | Minimal 对 + persona | **永不晋升** | DSH Minimal 对照 |
 | `native` | 不锚定 | — | 基线 / 临时关闭 |
 
+上表描述的是「首轮就跑在目标模型上」的会话。**会话中途切换到目标模型不会重新锚定**：
+晋升是从历史推定的，所以会话直接进入「晋升后」那一列（`minimal` 例外——它永不晋升，
+中途切进来照样套 Minimal 对）。`native` 则任何请求都一字不改，维持宿主原样。
+
 ### 子代理
 
 `exemptSubagents: false`（默认）时子代理与主会话同样参与锚定。前提是该 agent 类型加载扩展——agent 配置里 `extensions: false` 的子代理不会运行本扩展；需要锚定就在 agent 定义里设为 `true`。

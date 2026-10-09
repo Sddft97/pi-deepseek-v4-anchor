@@ -186,6 +186,12 @@ export default function (pi: ExtensionAPI) {
 
 			const modelId = String(payload.model ?? ctx.model?.id ?? "");
 			const provider = String(ctx.model?.provider ?? "");
+			// native（enabled:false）= 零介入：不改 persona、不动工具目录、不封顶。
+			// 放在 modelMatches 之前——它与“是不是目标模型”无关。
+			if (!cfg.enabled) {
+				activity(`req model=${provider}/${modelId} → disabled (enabled=false: host request kept)`);
+				return;
+			}
 			if (!modelMatches(modelId, provider, cfg.models)) {
 				// 非目标模型：隐藏自定义引导工具（应对会话中途切到非目标模型的情况）
 				stripToolFromPayload(payload, EDITOR_TOOL_NAME);

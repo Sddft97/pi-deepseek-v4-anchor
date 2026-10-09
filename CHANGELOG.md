@@ -21,6 +21,13 @@ adheres to [Semantic Versioning](https://semver.org/).
   request goes out as the host's native one. Previously the prompt swap had
   already been applied, leaving "Minimal persona + full catalog" — a
   combination neither upstream condition was measured on
+- `native` (and any `enabled: false` configuration) is now a no-op for the
+  request. `before_provider_request` never checked `enabled`, so from the second
+  request onward a target model still went through the promotion branch and had
+  its system prompt replaced by the Minimal persona — the "baseline" preset was
+  sending "full catalog + Minimal persona", a combination neither upstream
+  condition covered. A disabled configuration now returns before any
+  transformation and logs `disabled (enabled=false: host request kept)`
 
 ### Changed
 

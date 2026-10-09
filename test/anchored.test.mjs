@@ -308,6 +308,31 @@ test("non-target models never see str_replace_editor", async () => {
   assert.ok(!out.tools.some((t) => t.function.name === "str_replace_editor"));
 });
 
+test("native preset (enabled:false) never touches the request, even when promoted", async () => {
+  writeSettings({ preset: "native" });
+  try {
+    const { events } = instantiate();
+    // 历史里已有 assistant 消息：在 enabled 的预设下这里会走 promoted 分支并换掉 persona
+    const payload = {
+      model: "deepseek-v4-pro",
+      max_tokens: 64000,
+      messages: [
+        { role: "system", content: "S" },
+        { role: "user", content: "q" },
+        { role: "assistant", content: "a" },
+      ],
+      tools: mkTools(["bash", "read", "str_replace_editor", "ls"]),
+    };
+    const out = await runRequest(events, payload, mkCtx("s7", "deepseek-v4-pro"));
+    assert.equal(out, payload);
+    assert.equal(out.messages[0].content, "S");
+    assert.equal(out.max_tokens, 64000);
+    assert.equal(out.tools.length, 4);
+  } finally {
+    writeSettings({}); // 还原，避免影响其他用例
+  }
+});
+
 test("interactive menu exposes completions with descriptions", () => {
   const { events } = instantiate();
   const cmd = events["cmd:anchored-tools"];

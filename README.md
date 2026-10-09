@@ -122,6 +122,13 @@ Patterns are re-evaluated per request — a newly released model needs a setting
 | `minimal` | Minimal pair + persona | **never promotes** | DSH Minimal comparison |
 | `native` | no anchoring | — | baseline / temporary off |
 
+The table describes a session that runs on a target model from its first
+request. Switching *to* a target model in the middle of a session never
+re-anchors: promotion is detected from history, so the session starts out in
+the "after promotion" column (`minimal` is the exception — it never promotes,
+so a mid-session switch gets the Minimal pair like any other request). `native`
+leaves every request exactly as the host built it.
+
 ### Subagents
 
 `exemptSubagents: false` (default) makes subagents bootstrap like the main
