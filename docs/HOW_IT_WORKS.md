@@ -34,6 +34,33 @@ session loses the trajectory. Anchored Standard gets both.
    pi context is re-injected as a hidden user message so the model does not
    lose pi's rules. The cap is removed.
 
+**Tool declaration.** `str_replace_editor` is registered once when the
+extension loads (`defaultActive: false`) and declared to the model per run from
+`before_agent_start`, because pi builds a run's tool loadout after that hook —
+so a `setActiveTools()` call there takes effect for the same request. Anything
+that changes the model *after* session creation (picking another model in a
+session that started on a non-target one, a subagent session) therefore still
+gets the Minimal pair; the declaration follows the current model, not the model
+that happened to be active at `session_start`.
+
+**Who keeps the persona.** After promotion the persona stays — but only for a
+session that actually bootstrapped. A session that reaches promotion *without*
+having anchored (it started on a non-target model, and the switch to a target
+model happened later) is sent untouched instead: full catalog, pi's own system
+prompt, no output cap. Anchoring is a first-request transformation, so such a
+session cannot earn the DSH trajectory anyway — swapping its prompt would only
+drop pi's rules, with nothing captured to reinject (`contextReinject` runs
+during bootstrap).
+
+The classification is per session. A session whose history was already
+non-empty at `session_start` (resume, fork, `pi -c`) is treated as anchored,
+because it cannot be classified either way — this keeps resumed and forked
+sessions behaving exactly as before. Note that `session_start.reason` cannot be
+used for the fresh/resume distinction: resuming at startup reports `startup`
+too; the check is the absence of any message entry. The two sets that back this
+are deliberately kept across `/reload`, since the same session re-emits
+`session_start` there.
+
 **Sticky promotion.** Once promoted, the session stays promoted across
 compaction: promotion is re-detected from history, and once seen it is
 remembered in-process, so the collapsed history no longer causes an accidental
@@ -41,8 +68,11 @@ re-bootstrap.
 
 **Safety nets.** A server 4xx promotes the session (avoids retry loops with a
 stripped catalog). Any extension error is swallowed — the request always goes
-out. If a configured bootstrap tool is missing from the catalog, the tool
-filter is skipped for that request with a warning.
+out. If a configured bootstrap tool is missing from the catalog, **or the host
+exposes no tool catalog at all** (`tools: []`, e.g. `--no-tools`), the **whole**
+bootstrap is skipped for that request (persona, tool filter and output cap all
+left alone), so the request goes out as the host's native one with a warning —
+never as "Minimal persona + full catalog".
 
 ## Payload format adapters
 
@@ -61,7 +91,7 @@ anthropic-messages payloads and `promoteOn: "tool-call"` could not see
 
 | Module | Responsibility |
 |---|---|
-| `index.ts` | Extension entry: event wiring, bootstrap/promotion state machine, session maps |
+| `index.ts` | Extension entry: event wiring, bootstrap/promotion state machine, session maps, per-run declaration of `str_replace_editor` |
 | `src/config.ts` | Presets, settings.json load/merge/validation, pattern matching (glob / regex / exact) |
 | `src/format.ts` | Payload format detection + per-format adapters (prompt swap, tool filter, max-token cap) |
 | `src/promotion.ts` | Promotion detection from payload history and from pi session entries |
@@ -72,13 +102,19 @@ anthropic-messages payloads and `promoteOn: "tool-call"` could not see
 ## Diagnosing behavior
 
 - **Startup marker** — `~/.pi/agent/tmp/anchored-loaded.log`: one line per
-  load, includes the effective `models` patterns. Check this first to confirm
-  which version is active.
+  load, with the **global** effective `models` patterns and `enabled` state.
+  Check this first to confirm which version is active and what the global config
+  resolves to. Project-level `.pi/settings.json` overrides are not visible here
+  (they are merged per session), so the marker does not always describe the
+  final per-session value — the activity log's per-request lines do.
 - **Status bar** — while bootstrapping, `[⛓ bootstrap: bash+str_replace_editor]`
   is shown; it clears on promotion.
 - **Activity log** — `~/.pi/agent/tmp/anchored-activity.log`: every request is
-  logged with session id, model, tool names, and the decision
-  (`bootstrap` / `promoted` / `not-targeted` / `subagent-exempt` / error).
+  logged with session id, model, tool names, and the decision (`bootstrap` /
+  `promoted` / `not-targeted` / `subagent-exempt` / `disabled`), plus tool
+  declaration changes (`editor-declared` / `editor-withdrawn`) and, for a
+  promoted request, whether the persona was kept or skipped because the session
+  never anchored.
 - **Debug log** — `~/.pi/agent/tmp/anchored-debug.log` (enable via
   `"debug": true` or `PI_ANCHORED_DEBUG=1`): per-request prompt mode and final
   tool list.

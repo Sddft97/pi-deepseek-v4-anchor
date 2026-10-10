@@ -29,7 +29,8 @@ Then `/reload` (or restart pi).
 
 Out of the box, every DeepSeek flash/pro model (any provider, any naming — via the default rule `/deepseek.*(flash|pro)/i`) is anchored:
 
-1. Start a session on such a model — the status bar shows `[⛓ bootstrap: bash+str_replace_editor]`
+1. Run a turn on such a model — the status bar shows `[⛓ bootstrap: bash+str_replace_editor]`
+   (switching to the model mid-session works too: the tool is declared per run, not at session start)
 2. The first turn runs with the Minimal pair + persona and a capped output budget
 3. The first tool call promotes the session — full catalog restored, cap removed, status cleared
 
@@ -120,6 +121,17 @@ Patterns are re-evaluated per request — a newly released model needs a setting
 | `anchor-restore` | Minimal pair + persona | original pi prompt restored + full catalog | A/B: restore vs keep |
 | `minimal` | Minimal pair + persona | **never promotes** | DSH Minimal comparison |
 | `native` | no anchoring | — | baseline / temporary off |
+
+The table describes a session that runs on a target model from its first
+request. Switching *to* a target model in the middle of a session never
+re-anchors: promotion is detected from history, so the session starts out in
+the "after promotion" column. It keeps the persona only if it actually
+bootstrapped — a session that never anchored is sent as the host built it (full
+catalog plus pi's own prompt), since anchoring is a first-request
+transformation. `minimal` is the exception to that column: it never promotes, so
+a mid-session switch gets the Minimal pair like any other request. `native`
+anchors nothing: it hides the extension's own tool and leaves the request
+otherwise exactly as the host built it.
 
 ### Subagents
 

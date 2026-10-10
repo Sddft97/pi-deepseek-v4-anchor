@@ -46,6 +46,7 @@ import {
 	PRESETS,
 	readSettingsJson,
 	resolveConfig,
+	resolveGlobalConfig,
 } from "./src/config.js";
 import type { PayloadAdapter, PayloadFormat } from "./src/format.js";
 import {
@@ -90,11 +91,18 @@ export { applyPromptMode, capMaxTokens };
 // 扩展主体
 // ────────────────────────────────────────────────────────────────────────────
 
+/** 引导工具名（激活同步与 payload 剥离共用）。 */
+const EDITOR_TOOL_NAME = "str_replace_editor";
+
 export default function (pi: ExtensionAPI) {
 	if (!envBool("PI_ANCHORED", true)) return;
 
-	// 无条件启动标记
-	appendLine(MARKER_PATH, `loaded models=${DEFAULT_MODELS.join(",")} v4.2`);
+	// 无条件启动标记：带生效的全局 models 规则（项目级 .pi/settings.json 覆盖在会话内生效，这里看不到）
+	const markerCfg = resolveGlobalConfig();
+	appendLine(
+		MARKER_PATH,
+		`loaded models=${markerCfg.models.join(",")} enabled=${markerCfg.enabled} v4.2`,
+	);
 
 	/** 本进程内实际锚定过的 sessionId → 是否仍处引导态。 */
 	const anchoredSessions = new Map<string, boolean>();
@@ -109,12 +117,45 @@ export default function (pi: ExtensionAPI) {
 	const contextInjected = new Set<string>();
 	let lastUiCtx: { ui?: { setStatus?: (key: string, text?: string) => void } } | undefined;
 
+	/**
+	 * “这个会话到底锚定过没有”——只在**真·新会话**上才需要区分，所以用两个进程内集合：
+	 *
+	 * - `freshSessions`：会话建立时**还没有任何 message entry**（真·新会话）。resume / fork 一进来就
+	 *   带历史，无从判断，不入集合 → 后续走保守路径（沿用旧行为）。
+	 * - `anchoredInProcess`：本进程内确实跑过引导的会话（引导分支末尾写入）。
+	 *
+	 * 两个集合都**不在 session_shutdown 里清空**：同进程内切走再切回同一会话（switchSession / resume）
+	 * 时会重发 session_start，清掉就会丢掉“这个会话锚定过”的记忆，让已锚定会话的 persona 消失。
+	 * 按进程生命周期自然有界。（/reload 会重新实例化扩展、集合本来就是空的，那种情况由“非 fresh
+	 * 走保守路径”兜底。）
+	 *
+	 * 不能看 session_start.reason：`pi -c` / `--session` 启动即 resume 时 reason 也是 "startup"
+	 * （pi 里 sessionStartEvent === undefined → 默认值），会把 resume 误判成新会话。
+	 */
+	const freshSessions = new Set<string>();
+	const anchoredInProcess = new Set<string>();
+
+	pi.on("session_start", (_event, ctx) => {
+		try {
+			const sid = ctx.sessionManager?.getSessionId?.() ?? "";
+			if (!sid) return;
+			const entries = ctx.sessionManager?.buildContextEntries?.();
+			if (!entries) return; // 拿不到 entries 就不下判断 → 不 fresh（保守）
+			// 只看有没有 message entry——真·新会话也有 model_change / thinking_level_change 条目
+			if (!entries.some((e) => (e as { message?: unknown })?.message !== undefined)) {
+				freshSessions.add(sid);
+			}
+		} catch {
+			/* 忽略：判不出来就当非 fresh */
+		}
+	});
+
 	function promoteSession(sid: string): void {
 		anchoredSessions.set(sid, false); // 仍记着锚定过，但已晋升
 		lastUiCtx?.ui?.setStatus?.("anchored", undefined);
 	}
 
-	/** 从 payload.tools 里移除指定工具（用于非目标模型隐藏 str_replace_editor 等自定义工具）。 */
+	/** 从 payload.tools 里移除指定工具（兼底：应对 before_agent_start 之后模型才变化的情况）。 */
 	const stripToolFromPayload = (payload: Record<string, unknown>, name: string): void => {
 		const tools = payload.tools;
 		if (!Array.isArray(tools)) return;
@@ -125,22 +166,50 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
-	// 目标模型会话才注册 str_replace_editor（非目标模型看不到/用不到这个自定义工具）
-	pi.on("session_start", (_event, ctx) => {
-		try {
-			const cfg = resolveConfig(loadRawConfig(ctx.cwd, ctx.isProjectTrusted()));
-			const model = ctx.model;
-			if (!cfg.enabled || !model || !modelMatches(model.id, model.provider, cfg.models)) return;
-			// 防重复注册（session_start 可能对同一会话触发多次）
-			const exists = pi
-				.getAllTools?.()
-				?.some((t) => t.name === "str_replace_editor");
-			if (exists) return;
-			registerEditorTool(pi);
-		} catch {
-			/* 忽略：工具注册失败不应中断会话 */
+	/**
+	 * 注册与「声明给模型」分离。
+	 *
+	 * 之前是在 session_start 里按「当时的模型」注册 str_replace_editor，而 session_start 只在会话
+	 * 创建/替换（以及 /reload）时触发一次，切换模型不会重跑——于是「启动在非目标模型上、之后再切到
+	 * 目标模型」的会话永远拿不到这个引导工具，before_provider_request 只能 fail-safe。
+	 *
+	 * 现在：扩展加载时无条件注册（defaultActive:false，默认不声明给任何模型），是否声明由
+	 * before_agent_start 按当前模型逐轮决定——pi 官方的 dynamic tools 模式。
+	 */
+	try {
+		registerEditorTool(pi);
+	} catch {
+		/* 忽略：工具注册失败不应中断会话 */
+	}
+
+	/** 本扩展自己声明过 str_replace_editor 吗？只撤回自己加的那个，不动用户显式启用的。 */
+	let editorActivatedByUs = false;
+
+	/** 目标模型才把 str_replace_editor 声明给模型；非目标模型不声明。幂等：状态未变就不碰 loadout。 */
+	function syncEditorActivation(ctx: {
+		cwd: string;
+		isProjectTrusted(): boolean;
+		model?: { id: string; provider: string };
+	}): void {
+		const cfg = resolveConfig(loadRawConfig(ctx.cwd, ctx.isProjectTrusted()));
+		const model = ctx.model;
+		const wanted = Boolean(cfg.enabled && model && modelMatches(model.id, model.provider, cfg.models));
+		const active = pi.getActiveTools?.() ?? [];
+		const declared = active.includes(EDITOR_TOOL_NAME);
+		if (wanted) {
+			if (declared) return;
+			pi.setActiveTools?.([...active, EDITOR_TOOL_NAME]);
+			editorActivatedByUs = true;
+			activity(`editor-declared for target model ${model?.provider}/${model?.id}`);
+			return;
 		}
-	});
+		// 非目标模型：只撤回本扩展自己声明的，避免与用户显式的 --tools / defaultTools 打架
+		if (declared && editorActivatedByUs) {
+			pi.setActiveTools?.(active.filter((name) => name !== EDITOR_TOOL_NAME));
+			editorActivatedByUs = false;
+			activity("editor-withdrawn (non-target model)");
+		}
+	}
 
 	pi.on("before_provider_request", (event, ctx) => {
 		try {
@@ -155,9 +224,18 @@ export default function (pi: ExtensionAPI) {
 
 			const modelId = String(payload.model ?? ctx.model?.id ?? "");
 			const provider = String(ctx.model?.provider ?? "");
+			// native（enabled:false）= 零介入：不改 persona、不动工具目录、不封顶。放在 modelMatches 之
+			// 前——它与“是不是目标模型”无关。唯一例外：本扩展自己的工具也要摸掉——旧版 pi（0.84.x 的
+			// ToolDefinition 没有 defaultActive）注册即激活，不摸就会把 str_replace_editor 泄露进
+			// “对照基线”的请求里。新版 pi（有 defaultActive:false）这里是空操作。
+			if (!cfg.enabled) {
+				stripToolFromPayload(payload, EDITOR_TOOL_NAME);
+				activity(`req model=${provider}/${modelId} → disabled (enabled=false: no anchoring, editor hidden)`);
+				return;
+			}
 			if (!modelMatches(modelId, provider, cfg.models)) {
 				// 非目标模型：隐藏自定义引导工具（应对会话中途切到非目标模型的情况）
-				stripToolFromPayload(payload, "str_replace_editor");
+				stripToolFromPayload(payload, EDITOR_TOOL_NAME);
 				activity(`req model=${provider}/${modelId} → not-targeted (models=${cfg.models.join(",")})`);
 				return;
 			}
@@ -202,20 +280,9 @@ export default function (pi: ExtensionAPI) {
 					`msgs=${messages.length} promoteOn=${cfg.promoteOn} → ${promoted ? "promoted" : "bootstrap-candidate"}`,
 			);
 
-			// 引导期捕获原始系统提示词：晋升后（保留 persona 时）以 user message 注回，模型不丢 pi 上下文
-			if (
-				!promoted &&
-				!cfg.restorePrompt &&
-				cfg.contextReinject &&
-				cfg.bootstrapPrompt === "minimal" &&
-				!originalPrompts.has(sid)
-			) {
-				const sysText = adapter.getSystemText(payload);
-				if (typeof sysText === "string" && sysText.length > 0) {
-					originalPrompts.set(sid, sysText);
-				}
-			}
-
+			// 引导期捕获原始系统提示词：晋升后（保留 persona 时）以 user message 注回，模型不丢 pi 上下文。
+			// 注：必须在 fail-safe 判定**之后**才捕获（见下方 bootstrap 分支）——否则缺引导工具、
+			// 引导被跳过的会话也会存下原文，之后晋升时把已經在 system 里的宿主提示词重复注回一遍。
 			// 晋升通知（一次性）
 			if (cfg.notify && sid && anchoredSessions.get(sid) && promoted && !notified.has(sid)) {
 				notified.add(sid);
@@ -225,24 +292,35 @@ export default function (pi: ExtensionAPI) {
 			if (promoted) {
 				lastUiCtx = ctx;
 				promoteSession(sid);
-				// 工具已恢复全目录；是否保留引导提示词由 restorePrompt 决定（false = 整段会话保持，DSH 验证配置）
+				// 工具已恢复全目录。是否保留引导 persona 由 restorePrompt 决定（false = 保持），但**只对
+				// 确实锚定过的会话**：从没锚定过的会话（启动在非目标模型、中途才切进来的 fresh 会话）
+				// 保持宿主原样，回到验证过的 native 基线，而不是“全量目录 + 引导 persona”这种半锚定状态
+				// （那种状态下也没有原文可注回，pi 的规则会直接丢掉）。
+				// 判据：非 fresh（resume/fork，无从判断）一律保守沿用；fresh 的只看本进程是否真的引导过。
+				// 本会话是否“确实锚定过”：非 fresh（resume/fork，无从判断）按已锚定处理（保守沿用）。
+				// 没锚定过的会话同时跳过 persona **和**封顶剥离——两条都是“引导注入过才需要撒回”的东西，
+				// 一道剥掉宿主自己的 max_tokens（恰好等于 1024 时）就不是“一字不改”了。
+				const anchoredSession = !freshSessions.has(sid) || anchoredInProcess.has(sid);
 				let changed = false;
 				let out: Record<string, unknown> = payload;
-				if (!cfg.restorePrompt && cfg.bootstrapPrompt !== "none") {
+				if (anchoredSession && !cfg.restorePrompt && cfg.bootstrapPrompt !== "none") {
 					const p = applyPromptMode(adapter, out, cfg.bootstrapPrompt, cfg.bootstrapTools);
 					if (p.changed) {
 						out = p.payload;
 						changed = true;
 					}
 				}
-				// 剥离注入的输出预算上限，恢复宿主默认
-				const capped = capMaxTokens(adapter, out, cfg.bootstrapMaxTokens, true);
-				if (capped.changed) {
-					out = capped.payload;
-					changed = true;
+				if (anchoredSession) {
+					// 剥离注入的输出预算上限，恢复宿主默认
+					const capped = capMaxTokens(adapter, out, cfg.bootstrapMaxTokens, true);
+					if (capped.changed) {
+						out = capped.payload;
+						changed = true;
+					}
 				}
 				activity(
-					`req model=${provider}/${modelId} session=${sid} → promoted (full catalog${changed ? ", prompt kept" : ""})`,
+					`req model=${provider}/${modelId} session=${sid} → promoted (full catalog${changed ? ", prompt kept" : ""}` +
+						`${anchoredSession ? "" : ", host request kept: never anchored"})`,
 				);
 				return changed ? out : undefined;
 			}
@@ -250,32 +328,45 @@ export default function (pi: ExtensionAPI) {
 			// ── 引导阶段 ──
 			let next: Record<string, unknown> = { ...payload };
 
-			// 1) 系统提示词
-			const prompt = applyPromptMode(adapter, next, cfg.bootstrapPrompt, cfg.bootstrapTools);
-			if (prompt.changed) next = prompt.payload;
+			// 1) 工具目录（fail-safe：没有目录 / 缺引导工具 → 整个引导都不做，保持宿主原生请求）
+			//    必须在改 persona 之前判定：否则会留下「minimal persona + 全量工具目录」这种两不像状态
+			//    —— 既不是验证过的 Minimal 条件，也不是验证过的 native 基线。
+			const tools = Array.isArray(payload.tools) ? (payload.tools as ToolLike[]) : undefined;
+			const names = (tools ?? []).map((t) => toolName(t)).filter((n): n is string => typeof n === "string");
+			// 宿主一个工具都没给（`tools: []` 或字段缺失，如 deepseek/* 上 `--no-tools` 那种）时
+			// missing 必然非空 → 走同一条 fail-safe：引导条件本身凑不齐，就不要半途而废地只换 persona。
+			const { missing } = resolveBootstrap(names, cfg.bootstrapTools);
+			if (missing.length > 0) {
+				const warn = `[anchored-tools] bootstrap tools missing from catalog: ${missing.join(", ")}; skipping bootstrap (native request kept)`;
+				activity(`fail-safe: ${warn}`);
+				console.warn(warn);
+				return;
+			}
+			const filtered = filterTools(tools as ToolLike[], cfg.bootstrapTools);
+			const filteredTools = filtered.changed ? (filtered.tools as ToolLike[]) : undefined;
 
-			// 2) 工具目录（fail-safe：缺失则跳过整个引导并告警）
-			const tools = payload.tools as ToolLike[] | undefined;
-			if (Array.isArray(tools) && tools.length > 0) {
-				const names = tools.map((t) => toolName(t)).filter((n): n is string => typeof n === "string");
-				const { missing } = resolveBootstrap(names, cfg.bootstrapTools);
-				if (missing.length > 0) {
-					const warn = `[anchored-tools] bootstrap tools missing from catalog: ${missing.join(", ")}; skipping filter`;
-					activity(`fail-safe: ${warn}`);
-					console.warn(warn);
-					return prompt.changed ? next : undefined;
-				}
-				const filtered = filterTools(tools, cfg.bootstrapTools);
-				if (filtered.changed) {
-					next = { ...next, tools: filtered.tools };
+			// 2) 系统提示词（捕获原始提示词也放在这一步之前——fail-safe 已在上面 return 了）
+			if (
+				!cfg.restorePrompt &&
+				cfg.contextReinject &&
+				cfg.bootstrapPrompt === "minimal" &&
+				!originalPrompts.has(sid)
+			) {
+				const sysText = adapter.getSystemText(next);
+				if (typeof sysText === "string" && sysText.length > 0) {
+					originalPrompts.set(sid, sysText);
 				}
 			}
+			const prompt = applyPromptMode(adapter, next, cfg.bootstrapPrompt, cfg.bootstrapTools);
+			if (prompt.changed) next = prompt.payload;
+			if (filteredTools) next = { ...next, tools: filteredTools };
 
 			// 3) 输出预算封顶（可选）
 			const capped = capMaxTokens(adapter, next, cfg.bootstrapMaxTokens, false);
 			if (capped.changed) next = capped.payload;
 
 			anchoredSessions.set(sid, true);
+			anchoredInProcess.add(sid);
 			lastUiCtx = ctx;
 			ctx.ui?.setStatus?.("anchored", `[⛓ bootstrap: ${cfg.bootstrapTools.join("+")}]`);
 			activity(
@@ -298,6 +389,13 @@ export default function (pi: ExtensionAPI) {
 	// 晋升后上下文注回：保留 persona（restorePrompt:false + contextReinject + minimal）时，
 	// 把引导期捕获的 pi 原始提示词以持久 user message 注入（一次性；resume 已注入则跳过）。
 	pi.on("before_agent_start", (event, ctx) => {
+		// 每轮开始前同步 str_replace_editor 的声明状态。pi 在 before_agent_start 之后才组装本轮的
+		// systemPrompt 与 tool loadout，所以这里 setActiveTools() 对同一次请求即生效。
+		try {
+			syncEditorActivation(ctx);
+		} catch {
+			/* 忽略：同步失败不影响本轮请求，下面照常做上下文注回 */
+		}
 		try {
 			const cfg = resolveConfig(loadRawConfig(ctx.cwd, ctx.isProjectTrusted()));
 			if (!cfg.enabled) return;

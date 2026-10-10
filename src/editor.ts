@@ -227,12 +227,19 @@ function editorExecute(args: EditorArgs, maxOutputChars: number): string {
 	}
 }
 
-/** 注册 str_replace_editor 工具（仅目标模型会话调用；schema 对齐官方 Minimal）。 */
+/**
+ * 注册 str_replace_editor 工具（扩展加载时调用一次；schema 对齐官方 Minimal）。
+ *
+ * `defaultActive: false` —— 注册不等于声明给模型：默认不激活，由 index.ts 在
+ * `before_agent_start` 里按"当前模型是否命中目标"用 `setActiveTools()` 决定本轮是否声明。
+ * 这样注册时机与模型无关，会话中途切换模型也不会错过注册窗口。
+ */
 export function registerEditorTool(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "str_replace_editor",
 		label: "str_replace_editor",
 		description: EDITOR_DESCRIPTION,
+		defaultActive: false,
 		parameters: Type.Object({
 			command: Type.String({
 				enum: ["view", "create", "str_replace", "insert"],
@@ -270,5 +277,5 @@ export function registerEditorTool(pi: ExtensionAPI): void {
 			const text = editorExecute(params as EditorArgs, EDITOR_MAX_OUTPUT_CHARS);
 			return { content: [{ type: "text", text }], details: {} };
 		},
-	} as unknown as Parameters<typeof pi.registerTool>[0]);
+	});
 }

@@ -6,6 +6,52 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The bootstrap tool is no longer tied to the model that was active when the
+  session started.** `str_replace_editor` is registered once at extension load
+  (`defaultActive: false`) and declared to the model per run from
+  `before_agent_start` via `setActiveTools()`. Previously it was registered in
+  `session_start`, which only fires on session creation/replacement (and
+  `/reload`) — so a session that started on a non-target model (e.g. the default
+  one) and then switched to DeepSeek never got the tool. The bootstrap tool
+  check then failed and the request silently fell through to the fail-safe
+- A missing bootstrap tool — or a host that exposes no tool catalog at all
+  (`tools: []`, e.g. `--no-tools`) — now skips the **whole** bootstrap instead
+  of only the tool filter: persona, catalog and output cap are left untouched
+  and the request goes out as the host's native one. Previously the prompt swap
+  had already been applied, leaving "Minimal persona + full catalog" — a
+  combination neither upstream condition was measured on
+- `native` (and any `enabled: false` configuration) is now a no-op for the
+  request. `before_provider_request` never checked `enabled`, so from the second
+  request onward a target model still went through the promotion branch and had
+  its system prompt replaced by the Minimal persona — the "baseline" preset was
+  sending "full catalog + Minimal persona", a combination neither upstream
+  condition covered. A disabled configuration now returns before any
+  transformation and logs `disabled (enabled=false: no anchoring, editor
+  hidden)`; it only hides the extension's own tool, so a `str_replace_editor`
+  that older pi versions auto-activate cannot leak into the baseline
+- The startup marker (`anchored-loaded.log`) now logs the resolved **global**
+  `models` patterns and `enabled` state instead of the hardcoded built-in
+  defaults it always printed before. The docs claimed the line contained the
+  effective patterns, so it was repeatedly read as "my rules did not match"
+  when the real problem was elsewhere
+
+### Changed
+
+- Activity log: the fail-safe line now reads `...; skipping bootstrap (native
+  request kept)`, and every change of tool declaration is logged as
+  `editor-declared` / `editor-withdrawn`
+- The bootstrap persona is now kept after promotion **only for sessions that
+  actually bootstrapped**. A session that reaches promotion without having
+  anchored — it started on a non-target model and switched to a target model
+  later — is sent untouched instead: full catalog, pi's own system prompt, no
+  output cap (the measured native baseline). Previously it got "full catalog +
+  Minimal persona": a combination neither upstream condition covered, which
+  also dropped pi's rules with nothing captured to reinject. Sessions whose
+  history was already non-empty at `session_start` (resume, fork, `pi -c`) keep
+  the previous behaviour, as do `anchor-restore`, `minimal` and `native`
+
 ## [1.2.0] - 2026-10-01
 
 ### Added

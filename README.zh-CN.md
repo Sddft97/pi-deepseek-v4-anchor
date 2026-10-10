@@ -29,7 +29,8 @@ pi install npm:pi-deepseek-v4-anchor
 
 开箱即用：默认规则 `/deepseek.*(flash|pro)/i` 锚定所有 DeepSeek flash/pro 模型（任意 provider、任意命名）：
 
-1. 用此类模型开会话，状态栏出现 `[⛓ bootstrap: bash+str_replace_editor]`
+1. 在该类模型上发一轮消息，状态栏出现 `[⛓ bootstrap: bash+str_replace_editor]`
+   （会话中途切到该模型同样生效：工具按轮声明，不再依赖会话创建时的模型）
 2. 第一轮以 Minimal 工具对 + persona、受限输出预算运行
 3. 首个工具调用即晋升——恢复全目录、解除封顶、清除状态
 
@@ -119,6 +120,12 @@ pi install npm:pi-deepseek-v4-anchor
 | `anchor-restore` | Minimal 对 + persona | 还原 pi 原提示词 + 全目录 | A/B：还原 vs 保持 |
 | `minimal` | Minimal 对 + persona | **永不晋升** | DSH Minimal 对照 |
 | `native` | 不锚定 | — | 基线 / 临时关闭 |
+
+上表描述的是「首轮就跑在目标模型上」的会话。**会话中途切换到目标模型不会重新锚定**：
+晋升是从历史推定的，所以会话直接进入「晋升后」那一列；但 persona 只留给**确实锚定过**
+的会话——从没锚定过的会话按宿主原样发出（全量目录 + pi 原提示词），因为锚定是首请求
+才有的变换。`minimal` 是这一列的例外：它永不晋升，中途切进来照样套 Minimal 对。
+`native` 完全不锚定——只藏起自己的工具，其余一律按宿主原样发出。
 
 ### 子代理
 

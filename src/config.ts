@@ -212,6 +212,18 @@ export function resolveConfig(raw: RawAnchoredTools | undefined): Config {
 	};
 }
 
+/**
+ * 全局 settings.json 的生效配置（不含项目级 `.pi/settings.json` 覆盖）。
+ *
+ * 供加载期使用：扩展工厂拿不到 cwd/项目信任状态，启动标记只能用全局值。项目级覆盖只在会话内
+ * 生效，因此标记不代表最终值——不要在标记里倒推“这个会话到底锁定了哪些模型”。
+ */
+export function resolveGlobalConfig(): Config {
+	return resolveConfig(
+		readSettingsJson(join(getAgentDir(), "settings.json"))?.anchoredTools as RawAnchoredTools | undefined,
+	);
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // 模型匹配（glob）
 // ────────────────────────────────────────────────────────────────────────────
