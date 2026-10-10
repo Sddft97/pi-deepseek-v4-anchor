@@ -1,0 +1,79 @@
+name: release
+
+# 发布只有一个入口：main 上的 package.json 版本一旦没有对应 tag，就认为该版本要发。
+# 因此“合并 release PR”就等于“发版”——不需要手动 git tag，也不需要本地 npm publish。
+#
+# 也接受手动推上来的 tag（会校验 tag 与 package.json 一致），保留这条后路。
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: write # 自动补打 tag
+  id-token: write # npm provenance（OIDC）
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      # 先判断“这次要不要发”，避免普通 main 推送把已发布的版本重发一遍
+      - name: Decide whether to release
+        id: state
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null 2>&1; then
+            tagged=yes
+          else
+            tagged=no
+          fi
+
+          case "${GITHUB_REF}" in
+            refs/tags/*)
+              if [ "${GITHUB_REF_NAME}" != "v$version" ]; then
+                echo "::error::tag ${GITHUB_REF_NAME} does not match package.json (v$version)"
+                exit 1
+              fi
+              intent=manual-tag
+              ;;
+            refs/heads/main)
+              if [ "$tagged" = "no" ]; then intent=main-untagged; else intent=none; fi
+              ;;
+            *)
+              intent=none
+              ;;
+          esac
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "intent=$intent" >> "$GITHUB_OUTPUT"
+          echo "version=$version  tagged=$tagged  intent=$intent"
+
+      - run: npm ci
+      - run: npm test
+      - run: npx tsc --noEmit
+
+      # 先发布再打 tag：若发布失败（例如缺 NPM_TOKEN），不会留下“有 tag、却没发出去”
+      # 的死局——下一次 main 推送会重新尝试发布。
+      - name: Publish to npm
+        if: steps.state.outputs.intent != 'none'
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # main 上出现了未打 tag 的版本 → 发布成功后再补 tag（CI 用 GITHUB_TOKEN 推的 tag 不会再
+      # 触发本 workflow，所以不需要它回头再跑一遍）
+      - name: Tag the published version
+        if: steps.state.outputs.intent == 'main-untagged'
+        run: |
+          git tag "v${{ steps.state.outputs.version }}"
+          git push origin "v${{ steps.state.outputs.version }}"

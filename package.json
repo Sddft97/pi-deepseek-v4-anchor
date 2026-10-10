@@ -47,7 +47,8 @@
   },
   "scripts": {
     "test": "node --test \"test/**/*.test.mjs\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "release": "node scripts/release.mjs"
   },
   "pi": {
     "extensions": [
