@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-10-10
+
 ### Fixed
 
 - **The bootstrap tool is no longer tied to the model that was active when the
