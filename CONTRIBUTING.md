@@ -58,22 +58,47 @@ keep it up to date when adapting upstream code.
 ## Releasing
 
 Versioning follows [semver](https://semver.org/): MAJOR for breaking config or
-behavior changes, MINOR for features, PATCH for fixes. Releases are cut by a
-maintainer via a small dedicated PR:
+behavior changes, MINOR for features, PATCH for fixes.
 
-1. Collect `[Unreleased]` in [CHANGELOG.md](CHANGELOG.md) into
-   `## [X.Y.Z] - YYYY-MM-DD`
-2. Bump `version` in `package.json`; add `CHANGELOG.md` to the npm payload if
-   not already in `files`
-3. Open the release PR (version bump + changelog only), merge to `main`
-4. Tag the merge commit and publish — tags always point at a release commit
-   and match the npm version exactly:
+A release is **one command plus one merge**:
 
-   ```bash
-   git tag vX.Y.Z && git push origin main --tags
-   npm pack --dry-run   # verify the file list
-   npm publish
-   ```
+```bash
+npm run release -- patch               # or minor | major | 1.2.3
+npm run release -- patch --dry-run     # print the plan, change nothing
+```
+
+The script requires a clean `main` that is level with `origin/main` and does the
+mechanical part: collect `[Unreleased]` in [CHANGELOG.md](CHANGELOG.md) into
+`## [X.Y.Z] - YYYY-MM-DD`, bump `version` in `package.json` (and both root
+`version` fields in `package-lock.json`), push `release/X.Y.Z` and open the
+release PR. **The release PR must contain nothing but the version bump and the
+changelog collection.**
+
+Merging that PR *is* the release — `.github/workflows/release.yml` runs on every
+`main` push and, when it sees a `package.json` version with no matching tag:
+
+1. publishes with `npm publish --provenance`
+2. then creates and pushes `vX.Y.Z`
+
+Note the resulting invariant: **a `package.json` version on `main` that has no
+tag gets published automatically.** Pushing a tag by hand still works — that
+path is checked against `package.json` and published the same way (publish
+first, tag second, so a failed publish never leaves a tag behind). Tags always
+point at a release commit and match the npm version exactly.
+
+One-time setup: add an `NPM_TOKEN` repository secret (a granular token with
+publish rights for this package). To avoid a long-lived token instead, use npm
+trusted publishing: configure the trusted publisher on npmjs.com for this repo +
+`release.yml`, run npm ≥ 11.5.1 in the workflow, and drop the `NODE_AUTH_TOKEN`
+env from the publish step.
+
+Manual fallback (if CI is unavailable):
+
+```bash
+git tag vX.Y.Z && git push origin main --tags
+npm pack --dry-run   # verify the file list
+npm publish --provenance
+```
 
 ## Reporting issues
 
