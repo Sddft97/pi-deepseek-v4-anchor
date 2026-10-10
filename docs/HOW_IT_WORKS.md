@@ -68,7 +68,8 @@ re-bootstrap.
 
 **Safety nets.** A server 4xx promotes the session (avoids retry loops with a
 stripped catalog). Any extension error is swallowed — the request always goes
-out. If a configured bootstrap tool is missing from the catalog, the **whole**
+out. If a configured bootstrap tool is missing from the catalog, **or the host
+exposes no tool catalog at all** (`tools: []`, e.g. `--no-tools`), the **whole**
 bootstrap is skipped for that request (persona, tool filter and output cap all
 left alone), so the request goes out as the host's native one with a warning —
 never as "Minimal persona + full catalog".

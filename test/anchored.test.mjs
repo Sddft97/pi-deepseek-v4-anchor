@@ -432,6 +432,22 @@ test("native preset (enabled:false) touches nothing but hides our own tool", asy
   }
 });
 
+test("fail-safe: an empty tool catalog skips the whole bootstrap", async () => {
+  const { events } = instantiate();
+  for (const tools of [undefined, []]) {
+    const payload = {
+      model: "deepseek-v4-pro",
+      max_tokens: 64000,
+      messages: [{ role: "system", content: "HOST PROMPT" }, { role: "user", content: "q" }],
+      ...(tools === undefined ? {} : { tools }),
+    };
+    const out = await runRequest(events, payload, mkCtx(`sE${tools === undefined ? 1 : 2}`, "deepseek-v4-pro"));
+    assert.equal(out, payload); // persona 不换、不封顶、目录不动
+    assert.equal(out.messages[0].content, "HOST PROMPT");
+    assert.equal(out.max_tokens, 64000);
+  }
+});
+
 test("fail-safe: a skipped bootstrap does not capture the host prompt for reinjection", async () => {
   const { events } = instantiate();
   const ctx = mkCtx("sC1", "deepseek-v4-pro");

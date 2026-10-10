@@ -16,10 +16,11 @@ adheres to [Semantic Versioning](https://semver.org/).
   `/reload`) — so a session that started on a non-target model (e.g. the default
   one) and then switched to DeepSeek never got the tool. The bootstrap tool
   check then failed and the request silently fell through to the fail-safe
-- A missing bootstrap tool now skips the **whole** bootstrap instead of only the
-  tool filter: persona, catalog and output cap are left untouched and the
-  request goes out as the host's native one. Previously the prompt swap had
-  already been applied, leaving "Minimal persona + full catalog" — a
+- A missing bootstrap tool — or a host that exposes no tool catalog at all
+  (`tools: []`, e.g. `--no-tools`) — now skips the **whole** bootstrap instead
+  of only the tool filter: persona, catalog and output cap are left untouched
+  and the request goes out as the host's native one. Previously the prompt swap
+  had already been applied, leaving "Minimal persona + full catalog" — a
   combination neither upstream condition was measured on
 - `native` (and any `enabled: false` configuration) is now a no-op for the
   request. `before_provider_request` never checked `enabled`, so from the second

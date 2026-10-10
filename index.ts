@@ -328,23 +328,22 @@ export default function (pi: ExtensionAPI) {
 			// ── 引导阶段 ──
 			let next: Record<string, unknown> = { ...payload };
 
-			// 1) 工具目录（fail-safe：缺引导工具则整个引导都不做，保持宿主原生请求）
+			// 1) 工具目录（fail-safe：没有目录 / 缺引导工具 → 整个引导都不做，保持宿主原生请求）
 			//    必须在改 persona 之前判定：否则会留下「minimal persona + 全量工具目录」这种两不像状态
 			//    —— 既不是验证过的 Minimal 条件，也不是验证过的 native 基线。
-			const tools = payload.tools as ToolLike[] | undefined;
-			let filteredTools: ToolLike[] | undefined;
-			if (Array.isArray(tools) && tools.length > 0) {
-				const names = tools.map((t) => toolName(t)).filter((n): n is string => typeof n === "string");
-				const { missing } = resolveBootstrap(names, cfg.bootstrapTools);
-				if (missing.length > 0) {
-					const warn = `[anchored-tools] bootstrap tools missing from catalog: ${missing.join(", ")}; skipping bootstrap (native request kept)`;
-					activity(`fail-safe: ${warn}`);
-					console.warn(warn);
-					return;
-				}
-				const filtered = filterTools(tools, cfg.bootstrapTools);
-				if (filtered.changed) filteredTools = filtered.tools as ToolLike[];
+			const tools = Array.isArray(payload.tools) ? (payload.tools as ToolLike[]) : undefined;
+			const names = (tools ?? []).map((t) => toolName(t)).filter((n): n is string => typeof n === "string");
+			// 宿主一个工具都没给（`tools: []` 或字段缺失，如 deepseek/* 上 `--no-tools` 那种）时
+			// missing 必然非空 → 走同一条 fail-safe：引导条件本身凑不齐，就不要半途而废地只换 persona。
+			const { missing } = resolveBootstrap(names, cfg.bootstrapTools);
+			if (missing.length > 0) {
+				const warn = `[anchored-tools] bootstrap tools missing from catalog: ${missing.join(", ")}; skipping bootstrap (native request kept)`;
+				activity(`fail-safe: ${warn}`);
+				console.warn(warn);
+				return;
 			}
+			const filtered = filterTools(tools as ToolLike[], cfg.bootstrapTools);
+			const filteredTools = filtered.changed ? (filtered.tools as ToolLike[]) : undefined;
 
 			// 2) 系统提示词（捕获原始提示词也放在这一步之前——fail-safe 已在上面 return 了）
 			if (
